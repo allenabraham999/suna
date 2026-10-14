@@ -1,5 +1,6 @@
 
 import { projectSessions, projects } from '@kortix/db';
+import { COMPILED_AGENT_CONFIG_ENV, fitsInEnvString } from '@kortix/api-contract/compiled-agent-config-env';
 import { eq } from 'drizzle-orm';
 
 
@@ -425,6 +426,15 @@ export async function buildSessionSandboxEnvVars(input: SessionSandboxEnvInput):
           return null;
         })
       : null;
+  if (compiledAgentConfig && !fitsInEnvString(COMPILED_AGENT_CONFIG_ENV, compiledAgentConfig)) {
+    // Sizes only. An image whose kortixd predates the gzip form boots without
+    // this config, so the line is how to find sessions that need a newer image.
+    logger.info('[session-env] compiled agent config exceeds one env string; sending it gzip-encoded', {
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      configBytes: Buffer.byteLength(compiledAgentConfig, 'utf8'),
+    });
+  }
   const channelEnv = await buildSessionChannelEnv(input.sessionId);
   const sessionContextEnv = await buildSessionRuntimeContextEnv(input.sessionId);
   const genuiEnv = await buildGenuiSandboxEnv(input.projectId);
