@@ -390,6 +390,10 @@ jobs:
       - name: Set up Docker Buildx
         if: steps.builder.outputs.sticky != 'true'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # Exposes the job's cache token to `docker build`, for type=gha below.
+      - name: Expose the Actions cache to BuildKit
+        if: steps.builder.outputs.sticky != 'true'
+        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
       - name: Build API image
         env:
           STICKY: ${{ steps.builder.outputs.sticky }}
@@ -400,7 +404,13 @@ jobs:
           if [ "$STICKY" = true ]; then
             docker build --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t kortix/kortix-api:selfhost-local .
           else
-            docker build --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t kortix/kortix-api:selfhost-local .
+            # This repository's own layer cache first; the dev image's registry cache
+            # is built from other commits and misses most stages.
+            docker build --load \
+              --cache-from type=gha,scope=selfhost-api \
+              --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache \
+              --cache-to type=gha,scope=selfhost-api,mode=max \
+              --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t kortix/kortix-api:selfhost-local .
           fi
 
       - name: Self-host schema-bootstrap check (fresh DB)
