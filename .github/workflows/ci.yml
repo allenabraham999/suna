@@ -169,7 +169,12 @@ jobs:
             eslint-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
 
       - name: Enforce frontend lint
-        run: pnpm --dir apps/web exec eslint src --quiet --cache --cache-strategy content --cache-location .eslintcache
+        run: |
+          timeout 300 pnpm --dir apps/web exec eslint src --quiet --cache --cache-strategy content --cache-location .eslintcache || {
+            rc=$?
+            if [ "$rc" = 124 ]; then uptime; free -m; ps aux --sort=-%cpu | head -15; fi
+            exit "$rc"
+          }
 
       # Next.js 16.3 turns on Turbopack's FileSystem cache for `next build`
       # (`experimental.turbopackFileSystemCacheForBuild`, default true) and
@@ -373,11 +378,15 @@ jobs:
       # layers and the compose stack's images are already there, and the
       # build goes straight into the daemon. Elsewhere `sticky` is false and
       # the build uses a buildx builder warmed from the dev registry cache.
-      - name: Set up Docker builder (Vulcan sticky disk)
+      - name: Vulcan sticky disk?
         id: builder
-        uses: kortix-ai/vulcan/actions/setup-docker-builder@3c2ba95bc796cf34cb46c16c786588220370e1a0
-        with:
-          driver: docker
+        run: |
+          if [ -n "${VULCAN_STICKY_DISK:-}" ]; then
+            echo "sticky=true" >> "$GITHUB_OUTPUT"
+            echo "Sticky disk at $VULCAN_STICKY_DISK: dockerd's data root persists across runs."
+          else
+            echo "sticky=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Set up Docker Buildx
         if: steps.builder.outputs.sticky != 'true'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
