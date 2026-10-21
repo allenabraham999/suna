@@ -248,7 +248,7 @@ jobs:
   build-web:
     name: Build preview frontend image
     needs: authorize
-    runs-on: ${{ vars.CI_RUNNER_L || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_RUNNER_XL || vars.CI_RUNNER_L || 'ubuntu-24.04' }}
     timeout-minutes: 25
     permissions:
       contents: read

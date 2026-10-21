@@ -348,7 +348,7 @@ jobs:
         include:
           - arch: amd64
             platform: linux/amd64
-            runner: ${{ vars.CI_RUNNER_L || 'ubuntu-24.04' }}
+            runner: ${{ vars.CI_RUNNER_XL || vars.CI_RUNNER_L || 'ubuntu-24.04' }}
           - arch: arm64
             platform: linux/arm64
             runner: ${{ vars.CI_RUNNER_L_ARM || 'ubuntu-24.04-arm' }}

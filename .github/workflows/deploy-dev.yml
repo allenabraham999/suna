@@ -962,7 +962,7 @@ jobs:
     name: Build frontend image (amd64)
     needs: detect-changes
     if: needs.detect-changes.outputs.frontend == 'true'
-    runs-on: ${{ vars.CI_RUNNER_L || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_RUNNER_XL || vars.CI_RUNNER_L || 'ubuntu-24.04' }}
     timeout-minutes: 25
     # deploy-dev.yml has no workflow-level permissions (repo default: read).
     # Job-level permissions replace that default, so the reads stay listed.

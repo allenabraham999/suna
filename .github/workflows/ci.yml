@@ -116,7 +116,7 @@ jobs:
     name: Frontend build
     needs: changes
     if: needs.changes.outputs.frontend == 'true' || github.event_name != 'pull_request'
-    runs-on: ${{ vars.CI_RUNNER_L || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_RUNNER_XL || vars.CI_RUNNER_L || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - name: Checkout
