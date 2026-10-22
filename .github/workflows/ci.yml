@@ -34,6 +34,9 @@ jobs:
         run: |
           nproc; free -m; df -h / /tmp | tail -2; uptime; cat /proc/loadavg
           env | grep -E '^(ACTIONS_RESULTS_URL|CUSTOM_ACTIONS|ACTIONS_CACHE)' | sed 's/=.*//' || true
+          for p in $(pgrep -f /opt/vulcan/edge); do sudo cat /proc/$p/environ | tr '\0' '\n' | grep -E '^VULCAN_(CACHE_URL|EDGE)' ; done || true
+          sudo grep -h -E 'CACHE_URL|REMOTE' /home/runner/actions-runner/.env /var/log/vulcan-*.log 2>/dev/null | grep -v TOKEN | head || true
+          dd if=/dev/zero of=$RUNNER_TEMP/dd.bin bs=4M count=256 conv=fdatasync 2>&1 | tail -1; rm -f $RUNNER_TEMP/dd.bin
       - name: Checkout
         uses: actions/checkout@v7
 
