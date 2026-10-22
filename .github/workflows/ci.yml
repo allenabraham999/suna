@@ -20,14 +20,15 @@ permissions:
 
 jobs:
   frontend-build:
-    name: Frontend build (${{ matrix.mode }} ${{ matrix.copy }})
+    name: Frontend build (${{ matrix.size }} ${{ matrix.copy }})
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 1
       matrix:
-        copy: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        copy: [1, 2, 3, 4, 5]
         mode: [warm]
-    runs-on: ${{ vars.CI_RUNNER_L || 'ubuntu-24.04' }}
+        size: [vulcan-4vcpu-ubuntu-2404, vulcan-8vcpu-ubuntu-2404]
+    runs-on: ${{ matrix.size }}
     timeout-minutes: 20
     steps:
       - name: Probe
@@ -125,6 +126,12 @@ jobs:
             curl -s -o /dev/null -w "$u %{http_code} %{size_download}B %{time_connect}s conn %{time_starttransfer}s ttfb %{time_total}s total %{speed_download}B/s\n" "$u" || echo "$u failed"
           done
 
+      - name: Offline reinstall probe
+        if: always()
+        run: |
+          rm -rf node_modules apps/*/node_modules packages/*/node_modules
+          /usr/bin/time -f "offline install %es" pnpm install --frozen-lockfile --offline --filter "./apps/web..." >/dev/null 2>$RUNNER_TEMP/t.txt; tail -1 $RUNNER_TEMP/t.txt
+          du -sh $(pnpm store path) || true
       - name: Sizes
         if: always()
         run: du -sh apps/web/.next/cache apps/web/.next/cache/* ~/.local/share/pnpm/store 2>/dev/null || true; pnpm store path || true
