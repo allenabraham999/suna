@@ -34,7 +34,7 @@ jobs:
             curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/$f" -o "$d/$f"
           done
           sudo install -d -o runner -g runner /opt/vulcan/warm/pnpm-store
-          cd "$d" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm fetch --frozen-lockfile --store-dir /opt/vulcan/warm/pnpm-store --reporter=append-only > /var/tmp/fetch.log 2>&1; rc=$?; tail -5 /var/tmp/fetch.log; echo "fetch rc=$rc"
+          cd "$d" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm fetch --frozen-lockfile --store-dir /opt/vulcan/warm/pnpm-store --reporter=append-only > /var/tmp/fetch.log 2>&1 && rc=0 || rc=$?; tail -5 /var/tmp/fetch.log; echo "fetch rc=$rc"
           du -sh /opt/vulcan/warm/pnpm-store; find /opt/vulcan/warm/pnpm-store -type f | wc -l
           rm -rf "$d" ~/.cache/pnpm ~/.local/share/pnpm
           sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
@@ -91,7 +91,7 @@ jobs:
             curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/$f" -o "$d/$f"
           done
           sudo install -d -o runner -g runner /opt/vulcan/warm/pnpm-store
-          cd "$d" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm fetch --frozen-lockfile --store-dir /opt/vulcan/warm/pnpm-store --reporter=append-only > /var/tmp/fetch.log 2>&1; rc=$?; tail -5 /var/tmp/fetch.log; echo "fetch rc=$rc"
+          cd "$d" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm fetch --frozen-lockfile --store-dir /opt/vulcan/warm/pnpm-store --reporter=append-only > /var/tmp/fetch.log 2>&1 && rc=0 || rc=$?; tail -5 /var/tmp/fetch.log; echo "fetch rc=$rc"
           du -sh /opt/vulcan/warm/pnpm-store; find /opt/vulcan/warm/pnpm-store -type f | wc -l
           rm -rf "$d" ~/.cache/pnpm ~/.local/share/pnpm
           sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
