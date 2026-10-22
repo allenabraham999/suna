@@ -1,6 +1,8 @@
 name: Overhead bench
 
 on:
+  pull_request:
+    branches: [bs/overhead-base]
   workflow_dispatch:
     inputs:
       tag:
