@@ -10,7 +10,7 @@ on:
       runner:
         default: 'vulcan-4vcpu-ubuntu-2404'
       parallel:
-        default: '3'
+        default: '1'
       touch_api:
         default: 'false'
       pnpm_sticky:
@@ -30,6 +30,7 @@ jobs:
         run: |
           set +e
           date -u +%T; nproc; free -m | head -2
+          echo "POOL-ID cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs) gw=$(ip route | awk '/default/{print $3; exit}')"
           echo "VULCAN_STICKY_DISK=${VULCAN_STICKY_DISK:-}"
           df -h / /mnt/vulcan-sticky 2>/dev/null
           sudo cat /mnt/vulcan-sticky/.vulcan/sticky.json 2>/dev/null; echo
