@@ -1,335 +1,129 @@
+# bench: serialized copy (one job at a time)
 name: Tests
-
-# The contract lanes: six lanes (core-flows, core-db,
-# packages-api|cli|kortixd|rest) on GitHub-hosted runners (free on this public
-# repo). Each lane is the unchanged root command `pnpm test -- <args>`. The two
-# `core-*` lanes split the core run (`--core-group=flows|db`); the `packages-*`
-# lanes run package quality. No browser journey runs here: they run once, in
-# the release suite, against deployed staging (tests-release.yml).
-#
-# One gate (testing reset, 2026-10-16). These lanes run:
-#   1. inside the release suite on the pull request into `prod` (workflow_call
-#      from tests-release.yml) - part of the one required check
-#   2. nightly on `dev` - an early warning; failures wait there to be fixed
-#   3. once when someone adds the `test` label to a pull request into `dev`
-#   4. on `workflow_dispatch`
-#
-# A push to `dev` and the pull request into `staging` run nothing.
-#
-# `trunk-report` comments on the commit when the nightly run is red and its
-# failing lanes differ from the previous night's.
-
-on:
-  workflow_call:
+'on':
+  workflow_call: null
   pull_request:
-    branches: [dev]
-    types: [opened, reopened, synchronize, ready_for_review, labeled]
+    branches:
+    - dev
+    types:
+    - opened
+    - reopened
+    - synchronize
+    - ready_for_review
+    - labeled
   schedule:
-    # Off the top of the hour: GitHub drops congested top-of-hour crons.
-    - cron: '41 5 * * *' # 05:41 UTC daily, runs on dev HEAD
-  workflow_dispatch:
-
-# A pull request cancels its superseded run: only its newest commit matters.
-# A scheduled or manual run QUEUES instead, so it always ends with a verdict.
-#
-# A labelled run has its own group: a later push (whose lanes skip) must not
-# cancel the run a person asked for. Only re-adding the label supersedes it.
+  - cron: 41 5 * * *
+  workflow_dispatch: null
 concurrency:
   group: tests-${{ github.ref }}${{ github.event.action == 'labeled' && '-label' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 permissions:
   contents: read
-
 jobs:
   lane:
     name: ${{ matrix.lane }} lane
-    # Called from the release suite on the pull request into `prod`, it runs on
-    # every update. Into `dev`, only the act of adding `test` runs it.
-    if: >-
-      github.event_name != 'pull_request'
-      || github.base_ref == 'prod'
-      || (github.event.action == 'labeled' && github.event.label.name == 'test')
+    if: github.event_name != 'pull_request' || github.base_ref == 'prod' || (github.event.action == 'labeled' && github.event.label.name == 'test')
     runs-on: ${{ vars.CI_RUNNER_L || 'ubuntu-24.04' }}
-    # 40, not 20 and not 60. On free 4 vCPU runners the lanes run ~3x their
-    # Blacksmith time: core 15.4 min, browser-1 17.7 min (run 37812339796),
-    # so 40 is ~2x the slowest measured lane. The cap is a hang detector: on
-    # 2026-09-21 `@kortix/cli` hung and the lane burned the full 60 min before
-    # `trunk-report` could say `dev` was red.
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         include:
-          # The core run in two halves on two runners since 2026-10-16. On one
-          # 4 vCPU runner the flows (450 s) and the DB suites (385 s) shared the
-          # CPU and the lane took 11-12 min (run 38932470058). `core-flows`
-          # runs the REST/CLI flows; `core-db` runs the DB suites, the runner
-          # unit tests, route coverage, the worktree tests and the SDK.
-          # Neither runs package quality: the `packages-*` lanes do.
-          - lane: core-flows
-            mode: core
-            args: --core-group=flows
-          - lane: core-db
-            mode: core
-            args: --core-group=db
-          # Package quality in four slices on four runners since 2026-10-16.
-          # In one 4 vCPU lane the API, CLI and kortixd suites plus three
-          # `tsc` shared the CPU: 18.5 min, the CLI suite 7.7 min of it
-          # against 1.4 min alone (run 38777589705). `rest` holds the
-          # repo-wide checks and every other package.
-          - lane: packages-api
-            mode: packages
-            args: --packages-only --package-group=api
-          - lane: packages-cli
-            mode: packages
-            args: --packages-only --package-group=cli
-          - lane: packages-kortixd
-            mode: packages
-            args: --packages-only --package-group=kortixd
-          - lane: packages-rest
-            mode: packages
-            args: --packages-only --package-group=rest
+        - lane: core-flows
+          mode: core
+          args: --core-group=flows
+        - lane: core-db
+          mode: core
+          args: --core-group=db
+        - lane: packages-api
+          mode: packages
+          args: --packages-only --package-group=api
+        - lane: packages-cli
+          mode: packages
+          args: --packages-only --package-group=cli
+        - lane: packages-kortixd
+          mode: packages
+          args: --packages-only --package-group=kortixd
+        - lane: packages-rest
+          mode: packages
+          args: --packages-only --package-group=rest
+      max-parallel: 1
     env:
-      CI: "1"
+      CI: '1'
       TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       TEST_LANE: ${{ matrix.lane }}
       TEST_ARGS: ${{ matrix.args }}
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ env.TEST_SHA }}
-          fetch-depth: 1
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.3
-      # No node_modules cache: measured 2026-10-16 (runs
-      # 38936414571 cold, 38937437360 warm), restoring the 1.33 GB node_modules
-      # archive took 24-44 s plus a 4 s install, against a 41-49 s cold install.
-      - name: Install workspace dependencies
-        run: |
-          corepack enable pnpm
-          echo "pnpm: $(pnpm -v)  node: $(node -v)  bun: $(bun -v)  docker: $(docker -v)"
-          pnpm install --frozen-lockfile
-        env:
-          npm_config_engine_strict: "false"
-      - name: Install ripgrep
-        # The sandbox agent's glob/grep tools (kortix-sandbox-agent-server)
-        # shell out to rg. The sandbox image ships it; GitHub's runner image
-        # does not (Blacksmith's did, which hid this until 2026-10-08).
-        # Only package quality runs that code: the core lanes skip the install.
-        if: matrix.mode == 'packages'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ripgrep
-      - name: Restore Chromium
-        # packages-rest also runs apps/web's layout test that launches Chromium.
-        # The core lanes run no package quality, so they need no Chromium.
-        if: matrix.lane == 'packages-rest'
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-      - name: Install Chromium
-        if: matrix.lane == 'packages-rest'
-        run: pnpm --dir tests exec playwright install --with-deps chromium
-      - name: Free the local Supabase ports
-        # Blacksmith runners are reused, and a job that ended without stopping
-        # its stack leaves containers holding 54321-54324. The next
-        # `supabase start` then dies with
-        #   failed to bind host port for 0.0.0.0:54324: address already in use
-        # which looks exactly like a test failure. Seen four times on
-        # 2026-09-21 across the core, packages and browser lanes.
-        #
-        # Three things have to happen, in this order, because each one misses
-        # what the next catches:
-        #
-        # 1. `supabase stop` — reaches only containers of its own project name.
-        # 2. Remove by PUBLISHED PORT — catches a stack another checkout left.
-        # 3. WAIT for the kernel to release the port. Removing a container does
-        #    not free its binding instantly. On run 35630898515 (browser-1,
-        #    dev @ 3c67a5e0b6) steps 1 and 2 both ran clean, `docker ps`
-        #    matched nothing, 54322 then bound fine — and 54324 still refused.
-        #    Nothing was left to delete; the binding simply had not been given
-        #    back yet.
-        #
-        # If a port is STILL busy after the wait, say who holds it. The three
-        # occurrences so far were each diagnosed by inference; the next one
-        # should arrive with evidence instead.
-        run: |
-          set -uo pipefail
-          pnpm exec supabase stop --no-backup || true
-          for port in 54321 54322 54323 54324; do
-            ids=$(docker ps -aq --filter "publish=$port" || true)
-            if [ -n "$ids" ]; then
-              echo "[ci] removing stale container(s) on port $port: $ids"
-              docker rm -f $ids || true
-            fi
-          done
-          # Wait by ATTEMPTING A BIND, not by reading `ss`.
-          #
-          # `ss -ltn` lists LISTENING sockets only, so it reports a port free
-          # while `bind()` still returns EADDRINUSE — a closing docker-proxy is
-          # not "listening". Measured on browser-2: `supabase stop` returned at
-          # 09:19:26.710, the old `ss` loop cleared all four ports by
-          # 09:19:27.448 (0.74s, first poll), and `supabase start` still failed
-          # to bind 54324 twenty-five seconds later. The check was passing on a
-          # port that was not free, and two earlier fixes rested on that.
-          #
-          # A bind cannot disagree with Docker, because it is what Docker does.
-          # An uncaught OSError exits 1, so no try/except is needed — which
-          # keeps this a ONE-LINER. Multi-line python here would sit at column 0
-          # inside this block scalar and break the YAML.
-          # SO_REUSEADDR matches docker-proxy: without it a lingering TIME_WAIT
-          # would make this wait the full 30s on a healthy runner.
-          bindable() { python3 -c "import socket,sys; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('0.0.0.0',int(sys.argv[1])))" "$1" 2>/dev/null; }
-          for port in 54321 54322 54323 54324; do
-            for _ in $(seq 1 30); do
-              bindable "$port" && break
-              sleep 1
-            done
-            if ! bindable "$port"; then
-              echo "::warning::port $port still refuses a bind after the sweep; supabase start will fail"
-              ss -ltnp "sport = :$port" || true
-              ss -tanH "sport = :$port" || true
-              docker ps -a --filter "publish=$port" --format '{{.ID}} {{.Image}} {{.Status}} {{.Ports}}' || true
-            fi
-          done
-      - name: Run the root test lane
-        run: |
-          set -euo pipefail
-          # SDK tests run in the core-db lane; skipping them here keeps the
-          # binding `packages-*` lanes as short as they can be.
-          if [[ "$TEST_LANE" == packages-* ]]; then
-            export KORTIX_PACKAGE_SKIP_SDK_TESTS=1
-          fi
-          echo "[ci] lane=$TEST_LANE sha=$TEST_SHA command=pnpm test -- $TEST_ARGS"
-          # shellcheck disable=SC2086 # TEST_ARGS is a matrix literal, split on purpose
-          if [[ -n "$TEST_ARGS" ]]; then pnpm test -- $TEST_ARGS; else pnpm test; fi
-      - name: Stop the local Supabase stack
-        # EVERY lane, not just the browser ones. The core and packages lanes
-        # start Supabase too (through `pnpm test`), and leaving it running is
-        # what strands the ports for the next job on a reused runner.
-        if: always()
-        run: pnpm exec supabase stop --no-backup || true
-      - name: Guard test artifacts against secrets
-        if: always()
-        run: |
-          set -euo pipefail
-          # grep, never rg: GitHub's ubuntu images ship no ripgrep, and with the
-          # tool missing under `2>/dev/null` this guard passed on nothing from
-          # its first run until 2026-08-25, when Blacksmith images (which ship
-          # rg) ran it for real. Pattern = GUARD_PATTERN_SOURCE in
-          # tests/src/core/scrub.ts; the runner scrubs the same shapes before
-          # writing results.json / report.html.
-          pattern='kortix_(pat|sa)_[A-Za-z0-9]{12,}|sk-[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{30,}\.'
-          if [ -d tests/test-results ] && grep -rEIl "$pattern" tests/test-results; then
-            echo "::error::A test artifact contains a secret-shaped value."
-            exit 1
-          fi
-          echo "No secret-shaped values found."
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: tests-results-${{ matrix.lane }}
-          path: |
-            tests/test-results/**
-            !tests/test-results/deployment-bypass-state.json
-          if-no-files-found: warn
-          retention-days: 14
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ env.TEST_SHA }}
+        fetch-depth: 1
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 22
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: 1.4.3
+    - name: Install workspace dependencies
+      run: 'corepack enable pnpm
 
+        echo "pnpm: $(pnpm -v)  node: $(node -v)  bun: $(bun -v)  docker: $(docker -v)"
+
+        pnpm install --frozen-lockfile
+
+        '
+      env:
+        npm_config_engine_strict: 'false'
+    - name: Install ripgrep
+      if: matrix.mode == 'packages'
+      run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ripgrep
+    - name: Restore Chromium
+      if: matrix.lane == 'packages-rest'
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+        key: playwright-chromium-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+    - name: Install Chromium
+      if: matrix.lane == 'packages-rest'
+      run: pnpm --dir tests exec playwright install --with-deps chromium
+    - name: Free the local Supabase ports
+      run: "set -uo pipefail\npnpm exec supabase stop --no-backup || true\nfor port in 54321 54322 54323 54324; do\n  ids=$(docker ps -aq --filter \"publish=$port\" || true)\n  if [ -n \"$ids\" ]; then\n    echo \"[ci] removing stale container(s) on port $port: $ids\"\n    docker rm -f $ids || true\n  fi\ndone\n# Wait by ATTEMPTING A BIND, not by reading `ss`.\n#\n# `ss -ltn` lists LISTENING sockets only, so it reports a port free\n# while `bind()` still returns EADDRINUSE — a closing docker-proxy is\n# not \"listening\". Measured on browser-2: `supabase stop` returned at\n# 09:19:26.710, the old `ss` loop cleared all four ports by\n# 09:19:27.448 (0.74s, first poll), and `supabase start` still failed\n# to bind 54324 twenty-five seconds later. The check was passing on a\n# port that was not free, and two earlier fixes rested on that.\n#\n# A bind cannot disagree with Docker, because it is what Docker does.\n# An uncaught OSError exits 1, so no try/except is needed — which\n# keeps this a ONE-LINER. Multi-line python here would sit at column 0\n# inside this block scalar and break the YAML.\n# SO_REUSEADDR matches docker-proxy: without it a lingering TIME_WAIT\n# would make this wait the full 30s on a healthy runner.\nbindable() { python3 -c \"import socket,sys; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('0.0.0.0',int(sys.argv[1])))\" \"$1\" 2>/dev/null; }\nfor port in 54321 54322 54323 54324; do\n  for _ in $(seq 1 30); do\n    bindable \"$port\" && break\n    sleep 1\n  done\n  if ! bindable \"$port\"; then\n    echo \"::warning::port $port still refuses a bind after the sweep; supabase start will fail\"\n    ss -ltnp \"sport = :$port\" || true\n    ss -tanH \"sport = :$port\" || true\n    docker ps -a --filter \"publish=$port\" --format '{{.ID}} {{.Image}} {{.Status}} {{.Ports}}' || true\n  fi\ndone\n"
+    - name: Run the root test lane
+      run: "set -euo pipefail\n# SDK tests run in the core-db lane; skipping them here keeps the\n# binding `packages-*` lanes as short as they can be.\nif [[ \"$TEST_LANE\" == packages-* ]]; then\n  export KORTIX_PACKAGE_SKIP_SDK_TESTS=1\nfi\necho \"[ci] lane=$TEST_LANE sha=$TEST_SHA command=pnpm test -- $TEST_ARGS\"\n# shellcheck disable=SC2086 # TEST_ARGS is a matrix literal, split on purpose\nif [[ -n \"$TEST_ARGS\" ]]; then pnpm test -- $TEST_ARGS; else pnpm test; fi\n"
+    - name: Stop the local Supabase stack
+      if: always()
+      run: pnpm exec supabase stop --no-backup || true
+    - name: Guard test artifacts against secrets
+      if: always()
+      run: "set -euo pipefail\n# grep, never rg: GitHub's ubuntu images ship no ripgrep, and with the\n# tool missing under `2>/dev/null` this guard passed on nothing from\n# its first run until 2026-08-25, when Blacksmith images (which ship\n# rg) ran it for real. Pattern = GUARD_PATTERN_SOURCE in\n# tests/src/core/scrub.ts; the runner scrubs the same shapes before\n# writing results.json / report.html.\npattern='kortix_(pat|sa)_[A-Za-z0-9]{12,}|sk-[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{30,}\\.'\nif [ -d tests/test-results ] && grep -rEIl \"$pattern\" tests/test-results; then\n  echo \"::error::A test artifact contains a secret-shaped value.\"\n  exit 1\nfi\necho \"No secret-shaped values found.\"\n"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: tests-results-${{ matrix.lane }}
+        path: 'tests/test-results/**
+
+          !tests/test-results/deployment-bypass-state.json
+
+          '
+        if-no-files-found: warn
+        retention-days: 14
   trunk-report:
     name: trunk verdict
-    needs: lane
-    # A lane that hits `timeout-minutes` concludes `cancelled`, not `failure`,
-    # so `failure()` would miss it. `cancelled()` is true only when the whole
-    # run is cancelled: a manual cancel, or a queued run that a newer
-    # one replaced before it started.
-    if: github.event_name == 'schedule' && !cancelled() && needs.lane.result != 'success'
+    needs:
+    - lane
+    if: ${{ !cancelled() && (github.event_name == 'schedule' && !cancelled() && needs.lane.result != 'success') }}
     runs-on: ${{ vars.CI_RUNNER_S || 'ubuntu-24.04' }}
     timeout-minutes: 10
     permissions:
-      contents: write # commit comment
-      actions: read # read this run's per-lane conclusions
+      contents: write
+      actions: read
     steps:
-      - name: Report the trunk verdict
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          SHA: ${{ github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-
-          lanes_of() {
-            gh api "repos/$REPO/actions/runs/$1/jobs" --paginate \
-              --jq '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != null) | select(.name | endswith("lane")) | .name' \
-              | sort | paste -sd, - | sed 's/,/, /g'
-          }
-          # `|| true`: a failed lookup must not swallow the comment below.
-          failed="$(lanes_of "$RUN_ID" || true)"
-
-          # A red `dev` would comment every night until it is fixed. Comment
-          # only when the failing lanes change.
-          previous="$(gh api "repos/$REPO/actions/workflows/tests.yml/runs?branch=dev&status=completed&per_page=10" \
-            --jq "[.workflow_runs[] | select(.id != $RUN_ID) | select(.event == \"schedule\") | select(.conclusion == \"success\" or .conclusion == \"failure\")][0] | \"\\(.id) \\(.conclusion)\"" || true)"
-          prev_failed=""
-          if [ "${previous#* }" = "failure" ]; then
-            prev_failed="$(lanes_of "${previous%% *}" || true)"
-          fi
-
-          # Name every commit since the last green run on `dev`: those are the
-          # suspects.
-          green="$(gh api "repos/$REPO/actions/workflows/tests.yml/runs?branch=dev&status=success&per_page=10" \
-            --jq '[.workflow_runs[] | select(.event == "schedule")][0].head_sha // empty' || true)"
-          suspects=""
-          if [ -n "$green" ]; then
-            suspects="$(gh api "repos/$REPO/compare/${green}...${SHA}" \
-              --jq '.commits[] | "- `\(.sha[0:10])` \(.commit.message | split("\n")[0]) (@\(.author.login // .commit.author.name))"' || true)"
-          fi
-
-          {
-            echo "## \`dev\` @ \`${SHA:0:8}\`: failure"
-            echo
-            echo "Contract lanes (\`core-flows\`, \`core-db\`, \`packages-*\`)."
-            if [ -n "$failed" ]; then
-              echo
-              echo "Failing lanes: \`$failed\`"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ -n "$failed" ] && [ "$failed" = "$prev_failed" ]; then
-            echo "Same failing lanes as the previous run on dev; no new comment." | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "::error::dev is still red at $SHA (lanes: $failed)"
-            exit 1
-          fi
-
-          # Built line by line: every line of this script must stay indented
-          # inside the YAML block scalar, so no embedded multi-line literal.
-          {
-            echo "\`dev\` is red at this commit."
-            echo
-            echo "Failing lanes: \`${failed:-see the run}\`"
-            echo
-            echo "Run: $RUN_URL"
-            echo
-            if [ -n "$suspects" ]; then
-              echo "Commits since the last green run (\`${green:0:10}\`), newest last:"
-              echo
-              echo "$suspects"
-              echo
-            fi
-            echo "The author whose commit broke it fixes forward. If \`dev\` is still"
-            echo "red 1 hour after this comment, anyone may revert the culprit PR."
-            echo "The staging pull request runs the same lanes and blocks the promote."
-            echo
-            echo "Reproduce one failing test with \`pnpm test -- --id <FLOW>\` or"
-            echo "\`pnpm --filter <pkg> test <file>\`. Rerun the lanes: \`gh workflow run tests.yml\`."
-          } > /tmp/trunk-verdict.md
-
-          gh api "repos/$REPO/commits/$SHA/comments" -F body=@/tmp/trunk-verdict.md --jq '.html_url'
-          echo "::error::dev is red at $SHA (lanes: ${failed:-unknown})"
-          exit 1
+    - name: Report the trunk verdict
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+        SHA: ${{ github.sha }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: "set -euo pipefail\n\nlanes_of() {\n  gh api \"repos/$REPO/actions/runs/$1/jobs\" --paginate \\\n    --jq '.jobs[] | select(.conclusion != \"success\" and .conclusion != \"skipped\" and .conclusion != null) | select(.name | endswith(\"lane\")) | .name' \\\n    | sort | paste -sd, - | sed 's/,/, /g'\n}\n# `|| true`: a failed lookup must not swallow the comment below.\nfailed=\"$(lanes_of \"$RUN_ID\" || true)\"\n\n# A red `dev` would comment every night until it is fixed. Comment\n# only when the failing lanes change.\nprevious=\"$(gh api \"repos/$REPO/actions/workflows/tests.yml/runs?branch=dev&status=completed&per_page=10\" \\\n  --jq \"[.workflow_runs[] | select(.id != $RUN_ID) | select(.event == \\\"schedule\\\") | select(.conclusion == \\\"success\\\" or .conclusion == \\\"failure\\\")][0] | \\\"\\\\(.id) \\\\(.conclusion)\\\"\" || true)\"\nprev_failed=\"\"\nif [ \"${previous#* }\" = \"failure\" ]; then\n  prev_failed=\"$(lanes_of \"${previous%% *}\" || true)\"\nfi\n\n# Name every commit since the last green run on `dev`: those are the\n# suspects.\ngreen=\"$(gh api \"repos/$REPO/actions/workflows/tests.yml/runs?branch=dev&status=success&per_page=10\" \\\n  --jq '[.workflow_runs[] | select(.event == \"schedule\")][0].head_sha // empty' || true)\"\nsuspects=\"\"\nif [ -n \"$green\" ]; then\n  suspects=\"$(gh api \"repos/$REPO/compare/${green}...${SHA}\" \\\n    --jq '.commits[] | \"- `\\(.sha[0:10])` \\(.commit.message | split(\"\\n\")[0]) (@\\(.author.login // .commit.author.name))\"' || true)\"\nfi\n\n{\n  echo \"## \\`dev\\` @ \\`${SHA:0:8}\\`: failure\"\n  echo\n  echo \"Contract lanes (\\`core-flows\\`, \\`core-db\\`, \\`packages-*\\`).\"\n  if [ -n \"$failed\" ]; then\n    echo\n    echo \"Failing lanes: \\`$failed\\`\"\n  fi\n} >> \"$GITHUB_STEP_SUMMARY\"\n\nif [ -n \"$failed\" ] && [ \"$failed\" = \"$prev_failed\" ]; then\n  echo \"Same failing lanes as the previous run on dev; no new comment.\" | tee -a \"$GITHUB_STEP_SUMMARY\"\n  echo \"::error::dev is still red at $SHA (lanes: $failed)\"\n  exit 1\nfi\n\n# Built line by line: every line of this script must stay indented\n# inside the YAML block scalar, so no embedded multi-line literal.\n{\n  echo \"\\`dev\\` is red at this commit.\"\n  echo\n  echo \"Failing lanes: \\`${failed:-see the run}\\`\"\n  echo\n  echo \"Run: $RUN_URL\"\n  echo\n  if [ -n \"$suspects\" ]; then\n    echo \"Commits since the last green run (\\`${green:0:10}\\`), newest last:\"\n    echo\n    echo \"$suspects\"\n    echo\n  fi\n  echo \"The author whose commit broke it fixes forward. If \\`dev\\` is still\"\n  echo \"red 1 hour after this comment, anyone may revert the culprit PR.\"\n  echo \"The staging pull request runs the same lanes and blocks the promote.\"\n  echo\n  echo \"Reproduce one failing test with \\`pnpm test -- --id <FLOW>\\` or\"\n  echo \"\\`pnpm --filter <pkg> test <file>\\`. Rerun the lanes: \\`gh workflow run tests.yml\\`.\"\n} > /tmp/trunk-verdict.md\n\ngh api \"repos/$REPO/commits/$SHA/comments\" -F body=@/tmp/trunk-verdict.md --jq '.html_url'\necho \"::error::dev is red at $SHA (lanes: ${failed:-unknown})\"\nexit 1\n"
