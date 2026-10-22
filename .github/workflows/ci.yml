@@ -67,7 +67,13 @@ jobs:
           driver: docker
       - name: Set up Docker builder (Vulcan sticky)
         if: inputs.variant == 'vulcanbuilder'
-        uses: kortix-ai/vulcan/actions/setup-docker-builder@main
+        run: |
+          name=vulcan
+          docker rm -f "buildx_buildkit_${name}0" >/dev/null 2>&1 || true
+          docker buildx rm --keep-state "$name" >/dev/null 2>&1 || true
+          args=(--name "$name" --driver docker-container --bootstrap --use)
+          [ ! -s "$HOME/.docker/buildx/buildkitd.default.toml" ] || args+=(--buildkitd-config "$HOME/.docker/buildx/buildkitd.default.toml")
+          docker buildx create "${args[@]}"
 
       - name: Build API image
         run: docker build --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t kortix/kortix-api:selfhost-local .
