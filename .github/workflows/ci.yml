@@ -1,5 +1,9 @@
 name: Overhead bench
 
+concurrency:
+  group: overhead-bench
+  cancel-in-progress: false
+
 on:
   pull_request:
     branches: [bs/overhead-base]
@@ -92,6 +96,7 @@ jobs:
 
   sandbox-image-packages:
     name: Sandbox image apt packages
+    needs: dependency-scan
     runs-on: ${{ vars.CI_RUNNER_S || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
@@ -103,6 +108,7 @@ jobs:
 
   dependency-scan:
     name: Dependency + secret scan
+    needs: changes
     runs-on: ${{ vars.CI_RUNNER_S || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
@@ -120,7 +126,7 @@ jobs:
 
   apt-dnat:
     name: Sandbox image apt packages (steer)
-    needs: changes
+    needs: sandbox-image-packages
     runs-on: ${{ vars.CI_RUNNER_S || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
