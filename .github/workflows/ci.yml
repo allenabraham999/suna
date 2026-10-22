@@ -33,6 +33,7 @@ jobs:
           done' > /tmp/probe/net.log 2>&1 &
           vmstat 1 > /tmp/probe/vmstat.log 2>&1 &
 
+      - name: Checkout
         uses: actions/checkout@v7
 
       - name: Install Node
