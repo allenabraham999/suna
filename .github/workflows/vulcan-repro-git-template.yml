@@ -1,0 +1,39 @@
+name: Vulcan repro git template
+on:
+  push:
+    branches: [vulcan/repro-git-template]
+jobs:
+  repro:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [vulcan-4vcpu-ubuntu-2404, ubuntu-24.04]
+        neutralize: [false, true]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: environment
+        run: |
+          env | grep -E '^(GIT_|TMPDIR|HOME)' || true
+          git config --list --show-origin || true
+          df -h / /tmp; ulimit -a | head -20
+      - name: simulate fixed hook (neutralize the template after checkout)
+        if: matrix.neutralize
+        run: |
+          if [ -n "${GIT_TEMPLATE_DIR:-}" ]; then rm -f "$GIT_TEMPLATE_DIR/objects/info/alternates" "$GIT_TEMPLATE_DIR/hooks/reference-transaction"; fi
+          ls -la "${GIT_TEMPLATE_DIR:-/nonexistent}/objects/info" "${GIT_TEMPLATE_DIR:-/nonexistent}/hooks" 2>&1 || true
+      - name: what a test does in /tmp (init, commit, clone, tar)
+        run: |
+          set -x
+          w=$(mktemp -d /tmp/repro-XXXX); cd "$w"
+          git init -q -b main src
+          echo hi > src/a; git -C src add -A
+          git -C src -c user.name=t -c user.email=t@t commit -qm one
+          cat src/.git/objects/info/alternates 2>/dev/null || echo "src: no alternates"
+          ls src/.git/hooks
+          time git clone -q --depth 1 "file://$w/src" clone
+          cat clone/.git/objects/info/alternates 2>/dev/null || echo "clone: no alternates"
+          du -sh src/.git clone/.git
+          ls -la clone/.git/objects/pack
+          time tar czf clone.tgz -C clone .
+          ls -la clone.tgz
