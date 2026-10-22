@@ -29,8 +29,12 @@ jobs:
           for f in pnpm-lock.yaml package.json pnpm-workspace.yaml .npmrc; do
             curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/$f" -o "$d/$f" || true
           done
+          mkdir -p "$d/patches"
+          for f in $(python3 -c 'import json,sys;print(" ".join(json.load(open(sys.argv[1])).get("pnpm",{}).get("patchedDependencies",{}).values()))' "$d/package.json"); do
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/$f" -o "$d/$f"
+          done
           sudo install -d -o runner -g runner /opt/vulcan/warm/pnpm-store
-          cd "$d" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm fetch --frozen-lockfile --store-dir /opt/vulcan/warm/pnpm-store --reporter=append-only 2>&1 | tail -5
+          cd "$d" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm fetch --frozen-lockfile --store-dir /opt/vulcan/warm/pnpm-store --reporter=append-only > /var/tmp/fetch.log 2>&1; rc=$?; tail -5 /var/tmp/fetch.log; echo "fetch rc=$rc"
           du -sh /opt/vulcan/warm/pnpm-store; find /opt/vulcan/warm/pnpm-store -type f | wc -l
           rm -rf "$d" ~/.cache/pnpm ~/.local/share/pnpm
           sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
@@ -82,8 +86,12 @@ jobs:
           for f in pnpm-lock.yaml package.json pnpm-workspace.yaml .npmrc; do
             curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/$f" -o "$d/$f" || true
           done
+          mkdir -p "$d/patches"
+          for f in $(python3 -c 'import json,sys;print(" ".join(json.load(open(sys.argv[1])).get("pnpm",{}).get("patchedDependencies",{}).values()))' "$d/package.json"); do
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/$f" -o "$d/$f"
+          done
           sudo install -d -o runner -g runner /opt/vulcan/warm/pnpm-store
-          cd "$d" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm fetch --frozen-lockfile --store-dir /opt/vulcan/warm/pnpm-store --reporter=append-only 2>&1 | tail -5
+          cd "$d" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm fetch --frozen-lockfile --store-dir /opt/vulcan/warm/pnpm-store --reporter=append-only > /var/tmp/fetch.log 2>&1; rc=$?; tail -5 /var/tmp/fetch.log; echo "fetch rc=$rc"
           du -sh /opt/vulcan/warm/pnpm-store; find /opt/vulcan/warm/pnpm-store -type f | wc -l
           rm -rf "$d" ~/.cache/pnpm ~/.local/share/pnpm
           sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
