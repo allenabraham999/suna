@@ -1,0 +1,68 @@
+name: BS desktop
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        default: vulcan-4vcpu-ubuntu-2204
+      variant:
+        default: baseline
+permissions:
+  contents: read
+jobs:
+  desktop:
+    name: Desktop installer smoke ${{ matrix.copy }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        copy: [1, 2, 3, 4, 5]
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: corepack enable pnpm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel
+        env:
+          npm_config_engine_strict: "false"
+
+      - name: Ensure Electron runtime
+        run: pnpm --filter @kortix/desktop-electron exec node scripts/ensure-runtime.js
+
+      - name: Build Linux desktop installer (Electron, unsigned)
+        run: pnpm --filter @kortix/desktop-electron exec electron-builder --linux --publish never
+        env:
+          KORTIX_DESKTOP_DEFAULT_URL: https://dev.kortix.com/projects
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Verify installer exists
+        run: |
+          shopt -s nullglob
+          files=(apps/desktop-electron/dist/*.AppImage)
+          test "${#files[@]}" -gt 0
+          ls -lh "${files[@]}"
+
+      - name: Diag
+        if: always()
+        run: |
+          set +e
+          nproc; free -m; df -h / /tmp | cat
+          node -v; bun -v; pnpm -v; which node bun pnpm
+          env | grep -iE 'npm|pnpm|electron|proxy|cache|vulcan|bun_' | sed -E 's/(token|secret)=.*/\1=***/I' | sort
+          pnpm store path; du -sh "$(pnpm store path)" 2>/dev/null
+          ls -la ~/.cache 2>/dev/null; du -sh ~/.cache/* 2>/dev/null
+          cat /etc/os-release | head -3
+          cat ~/.npmrc 2>/dev/null; cat .npmrc
