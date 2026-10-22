@@ -66,6 +66,8 @@ jobs:
           set +e
           echo "nproc=$(nproc) mem=$(free -m | awk '/Mem/{print $2}')MB"
           uname -r; cat /proc/loadavg
+          echo "hostid cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs) egress=$(curl -s -m 5 https://api.ipify.org) results=$ACTIONS_RESULTS_URL"
+          git -C $GITHUB_WORKSPACE config --get-all core.alternates 2>/dev/null; cat $GITHUB_WORKSPACE/.git/objects/info/alternates 2>/dev/null | sed 's/^/alternates: /'
           echo "bun cache: $(du -sh ~/.bun/install/cache 2>/dev/null)"; ls ~/.bun/install/cache 2>/dev/null | wc -l
           env | grep -i -E 'proxy|BUN_|npm_config' | sed 's/=.*token.*/=<redacted>/I'
           V=$(bun --version)
