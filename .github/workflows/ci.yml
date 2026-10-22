@@ -10,12 +10,13 @@ permissions:
   contents: read
 jobs:
   desktop:
-    name: Desktop installer smoke ${{ matrix.copy }}
+    name: Desktop installer smoke ${{ matrix.v }} ${{ matrix.copy }}
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
-        copy: [1, 2, 3, 4, 5]
+        copy: [1, 2, 3]
+        v: [nc64, warm]
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     steps:
@@ -49,7 +50,19 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
+        run: |
+          [ "${{ matrix.v }}" = nc64 ] && export npm_config_network_concurrency=64
+          df -T / /mnt/vulcan-sticky 2>/dev/null; findmnt /mnt/vulcan-sticky 2>/dev/null; ls ~/.local/share/pnpm/store 2>&1
+          pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
+        env:
+          npm_config_engine_strict: "false"
+
+      - name: Second install (warm store)
+        if: matrix.v == 'warm'
+        run: |
+          rm -rf node_modules apps/*/node_modules packages/*/node_modules
+          sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
+          pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
         env:
           npm_config_engine_strict: "false"
 
