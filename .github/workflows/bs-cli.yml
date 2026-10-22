@@ -1,0 +1,73 @@
+name: bs-cli
+on:
+  workflow_dispatch:
+    inputs:
+      copies:
+        default: '[1,2,3]'
+      runner:
+        default: 'vulcan-4vcpu-ubuntu-2404'
+jobs:
+  cli:
+    name: CLI binary smoke ${{ matrix.n }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        n: ${{ fromJSON(inputs.copies) }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install pnpm
+        run: |
+          corepack enable pnpm
+          echo "pnpm: $(pnpm -v)  node: $(node -v)  bun: $(bun -v)"
+
+      - name: Install dependencies (CLI + workspace deps)
+        run: pnpm install --frozen-lockfile --filter "@kortix/cli..."
+        env:
+          npm_config_engine_strict: "false"
+
+      - name: Build Linux CLI binary
+        run: |
+          bun build \
+            --compile \
+            --minify \
+            --target=bun-linux-x64 \
+            --outfile=/tmp/kortix-cli-smoke \
+            apps/cli/src/index.ts
+
+      - name: Smoke test binary
+        run: /tmp/kortix-cli-smoke version
+
+      - name: Diag
+        if: always()
+        run: |
+          set +e
+          nproc; free -m | head -2; df -h / /home/runner | tail -2
+          cat /etc/resolv.conf | grep -v '^#'
+          env | grep -iE 'proxy|npm_config|registry|VULCAN|ACTIONS_RESULTS' | sed 's/=.*token.*/=<redacted>/I' | cut -c1-120
+          du -sh ~/.local/share/pnpm/store 2>/dev/null; find ~/.local/share/pnpm/store -type f | wc -l
+          ls -la ~/.bun/bin; ls /opt/hostedtoolcache 2>/dev/null
+          t() { curl -sS -o /dev/null -L -w "$1 dns=%{time_namelookup} conn=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} size=%{size_download} speed=%{speed_download} ip=%{remote_ip} n_redir=%{num_redirects}\n" "$2"; }
+          V=$(bun -v)
+          curl -sSI https://github.com/oven-sh/bun/releases/download/bun-v$V/bun-linux-x64.zip | grep -i '^location' | cut -c1-90
+          for i in 1 2; do t bunzip https://github.com/oven-sh/bun/releases/download/bun-v$V/bun-linux-x64.zip; done
+          t api-tags https://api.github.com/repos/oven-sh/bun/git/refs/tags
+          t npm-meta https://registry.npmjs.org/zod
+          t npm-tgz-ts https://registry.npmjs.org/typescript/-/typescript-5.6.3.tgz
+          t npm-tgz-small https://registry.npmjs.org/yaml/-/yaml-2.8.2.tgz
+          getent ahosts registry.npmjs.org | head -3; getent ahosts release-assets.githubusercontent.com | head -3
+          ip route | head; ip -6 route | head -3
