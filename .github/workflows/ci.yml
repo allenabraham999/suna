@@ -8,6 +8,8 @@ on:
         default: 'vulcan-4vcpu-ubuntu-2404'
       bun:
         default: 'latest'
+      prefault:
+        default: '0'
 jobs:
   cli:
     name: CLI binary smoke ${{ matrix.n }}
@@ -37,6 +39,12 @@ jobs:
           corepack enable pnpm
           echo "pnpm: $(pnpm -v)  node: $(node -v)  bun: $(bun -v)"
 
+      - name: Prefault
+        if: inputs.prefault != '0'
+        run: |
+          free -m | head -2; grep -E 'AnonHugePages|MemFree' /proc/meminfo
+          /usr/bin/time -f "prefault ${{ inputs.prefault }}G wall=%e sys=%S" sh -c 'head -c ${{ inputs.prefault }}G /dev/zero > /dev/shm/pf; rm /dev/shm/pf'
+          /usr/bin/time -f "prefault-again wall=%e sys=%S" sh -c 'head -c ${{ inputs.prefault }}G /dev/zero > /dev/shm/pf; rm /dev/shm/pf'
       - name: Pre-diag
         if: false
         run: |
