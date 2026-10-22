@@ -54,7 +54,7 @@ jobs:
 
       - name: Install dependencies (CLI + workspace deps)
         run: |
-          pnpm config get registry; cat ~/.npmrc 2>/dev/null; env | grep -i -E "npm_config|proxy" | sed 's/=.*token.*/=<redacted>/I'
+          pnpm config get registry; cat ~/.npmrc 2>/dev/null || true; env | grep -i -E "npm_config|proxy" | grep -v -i token || true
           pnpm install --frozen-lockfile --filter "@kortix/cli..." --reporter=append-only 2>&1 | awk '{ print strftime("%H:%M:%S"), $0; fflush() }' | grep -v "^.\{9\}Progress" ; echo; pnpm store path; du -sh $(pnpm store path) 2>/dev/null; du -sh node_modules
         env:
           npm_config_engine_strict: "false"
