@@ -35,7 +35,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: ${{ inputs.variant == 'pinned' && '1.4.3' || 'latest' }}
 
       - name: Install Node
         uses: actions/setup-node@v7
@@ -72,8 +72,9 @@ jobs:
           for i in 1 2; do curl -sSL -o /dev/null -w "bun zip: %{size_download}B in %{time_total}s (connect %{time_connect} ttfb %{time_starttransfer}) %{speed_download}B/s via %{url_effective}\n" https://github.com/oven-sh/bun/releases/download/bun-v$V/bun-linux-x64.zip; done
           curl -sS -o /dev/null -w "api tags: %{time_total}s\n" https://api.github.com/repos/oven-sh/bun/git/refs/tags
           curl -sS -o /dev/null -w "npm registry: %{time_total}s\n" https://registry.npmjs.org/hono
+          TIMEFORMAT=%R
           rm -rf node_modules dist
-          /usr/bin/time -f "cold bun install (no node_modules): %es" bun install --frozen-lockfile >/dev/null 2>&1
-          /usr/bin/time -f "lint again: %es" bun run lint >/dev/null 2>&1
-          /usr/bin/time -f "arch test again: %es" bun run test:architecture >/dev/null 2>&1
-          /usr/bin/time -f "build again: %es" env BUN_COMPILE_TARGET=bun-linux-x64 bun run build >/dev/null 2>&1
+          echo "cold bun install: $( { time bun install --frozen-lockfile >/dev/null 2>&1; } 2>&1 )s"
+          echo "lint again: $( { time bun run lint >/dev/null 2>&1; } 2>&1 )s"
+          echo "arch test again: $( { time bun run test:architecture >/dev/null 2>&1; } 2>&1 )s"
+          echo "build again: $( { time env BUN_COMPILE_TARGET=bun-linux-x64 bun run build >/dev/null 2>&1; } 2>&1 )s"
