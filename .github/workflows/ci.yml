@@ -15,8 +15,8 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        copy: [1, 2, 3, 4, 5]
-        v: [proxy]
+        copy: [1, 2, 3]
+        v: [sticky, rootfs]
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     steps:
@@ -56,12 +56,16 @@ jobs:
           for i in $(seq 50); do curl -sf http://127.0.0.1:7471/stats && break; sleep 0.1; done
           echo "npm_config_registry=http://127.0.0.1:7471/npm/" >> $GITHUB_ENV
           echo "ELECTRON_MIRROR=http://127.0.0.1:7471/gh/electron/electron/releases/download/" >> $GITHUB_ENV
+          if [ "${{ matrix.v }}" = sticky ]; then sudo mkdir -p /mnt/vulcan-sticky/pnpm-store && sudo chown runner /mnt/vulcan-sticky/pnpm-store && echo "npm_config_store_dir=/mnt/vulcan-sticky/pnpm-store" >> $GITHUB_ENV; fi
           echo "ELECTRON_BUILDER_BINARIES_MIRROR=http://127.0.0.1:7471/gh/electron-userland/electron-builder-binaries/releases/download/" >> $GITHUB_ENV
 
       - name: Prime install (miss)
         run: pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
         env:
           npm_config_engine_strict: "false"
+      - name: Store location
+        if: false
+        run: true
       - name: Prime ensure (miss)
         run: pnpm --filter @kortix/desktop-electron exec node scripts/ensure-runtime.js
       - name: Prime build (miss)
@@ -72,7 +76,7 @@ jobs:
       - name: Wipe everything but the proxy
         run: |
           curl -s http://127.0.0.1:7471/stats; echo
-          rm -rf node_modules apps/*/node_modules packages/*/node_modules ~/.local/share/pnpm/store ~/.cache/electron ~/.cache/electron-builder packages/agent-tunnel/dist apps/desktop-electron/dist
+          rm -rf node_modules apps/*/node_modules packages/*/node_modules ~/.cache/electron ~/.cache/electron-builder packages/agent-tunnel/dist apps/desktop-electron/dist
           sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
 
       - name: Install dependencies
