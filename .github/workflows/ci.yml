@@ -35,8 +35,11 @@ jobs:
           corepack enable pnpm
           echo "pnpm: $(pnpm -v)  node: $(node -v)  bun: $(bun -v)"
 
+      - name: Pre-diag
+        run: |
+          set +x; df -h / ; mount | grep -E ' / |sticky|home' ; ls -la ~/.local/share/pnpm 2>&1; readlink -f ~/.local/share/pnpm/store; du -sh ~/.local/share/pnpm/store 2>&1; ls ~/.local/share/pnpm/store/v3 2>&1 | head; ls /mnt/vulcan-sticky 2>&1 | head; cat /proc/pressure/io 2>/dev/null; uptime
       - name: Install dependencies (CLI + workspace deps)
-        run: pnpm install --frozen-lockfile --filter "@kortix/cli..."
+        run: /usr/bin/time -v pnpm install --frozen-lockfile --filter "@kortix/cli..." --reporter=append-only --loglevel=info 2>&1 | grep -vE "^(\s*$)" | tail -60
         env:
           npm_config_engine_strict: "false"
 
