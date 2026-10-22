@@ -118,7 +118,7 @@ jobs:
           # No systemd in the VM: dockerd was started by the boot script; restart it with the same argv.
           pid=$(pidof dockerd); args=$(tr '\0' ' ' < /proc/$pid/cmdline); echo "dockerd argv: $args"
           t0=$(date +%s.%N)
-          sudo kill $pid; for _ in $(seq 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+          sudo kill $pid; for _ in $(seq 100); do sudo kill -0 $pid 2>/dev/null || break; sleep 0.1; done
           sudo sh -c "nohup $args >>/var/log/dockerd.log 2>&1 &"
           for _ in $(seq 120); do docker info >/dev/null 2>&1 && break; sleep 0.5; done
           t1=$(date +%s.%N)
