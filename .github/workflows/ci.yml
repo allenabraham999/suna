@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        copy: [1, 2, 3, 4, 5, 6]
+        copy: [1, 2, 3, 4, 5, 6, 7, 8, 9]
         mode: [warm]
     runs-on: ${{ vars.CI_RUNNER_L || 'ubuntu-24.04' }}
     timeout-minutes: 20
@@ -87,7 +87,8 @@ jobs:
       # a re-run logged "Cache restored from key" and the Turbopack compile
       # went 105s -> 1.549s.
       - name: Restore Turbopack build cache
-        uses: actions/cache@v4
+        id: tcache
+        uses: actions/cache/restore@v4
         with:
           path: apps/web/.next/cache
           key: ${{ matrix.mode == 'cold' && format('cold-{0}-{1}-', github.run_id, matrix.copy) || '' }}nextjs-turbopack-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.copy }}
@@ -103,6 +104,23 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: local-build-placeholder-anon-key
           NEXT_PUBLIC_BILLING_ENABLED: "false"
           NEXT_OUTPUT: standalone
+
+      - name: Save Turbopack build cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: apps/web/.next/cache
+          key: ${{ steps.tcache.outputs.cache-primary-key }}
+
+      - name: Edge diagnostics
+        if: always()
+        run: |
+          sudo cat /var/log/vulcan-edge.log 2>/dev/null | tail -40 || true
+          curl -s http://$(hostname -I | awk '{print $1}'):7480/edge-health || true; echo
+          cat /proc/loadavg; grep -E '^cpu ' /proc/stat
+          for u in https://registry.npmjs.org/next/-/next-16.0.0.tgz https://fonts.gstatic.com/s/inter/v20/UcC53FwrK3iLTcvneQg7Ca725JhhKnNqk6L5UUMbndwV.woff2; do
+            curl -s -o /dev/null -w "$u %{http_code} %{size_download}B %{time_connect}s conn %{time_starttransfer}s ttfb %{time_total}s total %{speed_download}B/s\n" "$u" || echo "$u failed"
+          done
 
       - name: Sizes
         if: always()
