@@ -15,7 +15,7 @@ jobs:
     name: CLI binary smoke ${{ matrix.n }}
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 1
       matrix:
         n: ${{ fromJSON(inputs.copies) }}
     runs-on: ${{ inputs.runner }}
@@ -39,8 +39,31 @@ jobs:
           corepack enable pnpm
           echo "pnpm: $(pnpm -v)  node: $(node -v)  bun: $(bun -v)"
 
+      - name: MemDiag
+        if: inputs.prefault == 'diag'
+        run: |
+          set +e
+          uname -r; cat /proc/cmdline; nproc; free -m | head -2
+          cat /sys/kernel/mm/transparent_hugepage/enabled
+          lsmod | grep -iE 'balloon|virtio' ; ls /sys/bus/virtio/drivers/
+          for d in /sys/bus/virtio/devices/*; do echo "$d $(cat $d/device) $(readlink $d/driver | xargs basename 2>/dev/null) features=$(cat $d/features)"; done
+          sudo dmesg | grep -iE 'balloon|hugepage|memory:|kvm|hypervisor' | head -20
+          cat > /tmp/touch.py <<'PY'
+          import mmap,time,sys
+          n=int(sys.argv[1])<<30
+          for rnd in range(3):
+            m=mmap.mmap(-1,n); t=time.time()
+            for o in range(0,n,4096): m[o]=1
+            t1=time.time()-t; t=time.time()
+            for o in range(0,n,4096): m[o]=2
+            print(f"round{rnd} first-touch {n>>30}G {t1:.2f}s  re-touch {time.time()-t:.2f}s", flush=True)
+            m.close()
+          PY
+          python3 /tmp/touch.py 4
+          grep -E 'MemFree|Cached' /proc/meminfo
+          sudo rmmod virtio_balloon 2>&1 && echo "balloon removed" && python3 /tmp/touch.py 4
       - name: Prefault
-        if: inputs.prefault != '0'
+        if: inputs.prefault != '0' && inputs.prefault != 'diag'
         run: |
           free -m | head -2; grep -E 'AnonHugePages|MemFree' /proc/meminfo
           /usr/bin/time -f "prefault ${{ inputs.prefault }}G wall=%e sys=%S" sh -c 'head -c ${{ inputs.prefault }}G /dev/zero > /dev/shm/pf; rm /dev/shm/pf'
