@@ -30,6 +30,16 @@ jobs:
           docker info 2>/dev/null | grep -iE 'iptables|Server Version' || true
           echo "--- v6"; ip -6 route show default || true; getent ahostsv6 archive.ubuntu.com | awk '{print $1}' | sort -u | head
           curl -6 -s -o /dev/null -m 4 -w 'v6 http %{http_code} %{time_total}\n' http://archive.ubuntu.com/ubuntu/ || echo "no v6 egress"
+      - name: Simulate two dead archive addresses (drop after any DNAT)
+        if: inputs.tag == 'dead'
+        run: |
+          sudo nft -f - <<'NFT'
+          table inet testdrop {
+            chain out { type filter hook output priority 0; policy accept; ip daddr { 91.189.91.82, 91.189.91.83 } tcp dport 80 drop; }
+            chain fwd { type filter hook forward priority 0; policy accept; ip daddr { 91.189.91.82, 91.189.91.83 } tcp dport 80 drop; }
+          }
+          NFT
+          curl -s -o /dev/null -m 4 --resolve archive.ubuntu.com:80:91.189.91.82 -w 'control (no steering yet): %{size_download} B %{time_total}s\n' http://archive.ubuntu.com/ubuntu/ls-lR.gz || echo "control: .82 unreachable as intended"
       - name: Boot path (setup + job-started hook), as run-job.sh runs it
         run: |
           sudo install -m 0644 .github/vulcan-archive.sh /opt/vulcan-archive-test.sh
