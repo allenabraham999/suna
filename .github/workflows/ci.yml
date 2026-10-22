@@ -15,8 +15,8 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        copy: [1, 2, 3]
-        v: [nc64, warm]
+        copy: [1, 2, 3, 4, 5]
+        v: [proxy]
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     steps:
@@ -49,20 +49,34 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install dependencies
+      - name: Start artifact proxy (in-VM stand-in for a host-local cache)
         run: |
-          if [ "${{ matrix.v }}" = nc64 ]; then export npm_config_network_concurrency=64; fi
-          df -T / /mnt/vulcan-sticky 2>/dev/null; findmnt /mnt/vulcan-sticky 2>/dev/null; ls ~/.local/share/pnpm/store 2>&1 || true
-          pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
+          mkdir -p /tmp/ap
+          (HOST=127.0.0.1 PORT=7471 DIR=/tmp/ap nohup bun .github/bs/artproxy.ts > /tmp/ap.log 2>&1 &)
+          for i in $(seq 50); do curl -sf http://127.0.0.1:7471/stats && break; sleep 0.1; done
+          echo "npm_config_registry=http://127.0.0.1:7471/npm/" >> $GITHUB_ENV
+          echo "ELECTRON_MIRROR=http://127.0.0.1:7471/gh/electron/electron/releases/download/" >> $GITHUB_ENV
+          echo "ELECTRON_BUILDER_BINARIES_MIRROR=http://127.0.0.1:7471/gh/electron-userland/electron-builder-binaries/releases/download/" >> $GITHUB_ENV
+
+      - name: Prime install (miss)
+        run: pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
         env:
           npm_config_engine_strict: "false"
-
-      - name: Second install (warm store)
-        if: matrix.v == 'warm'
+      - name: Prime ensure (miss)
+        run: pnpm --filter @kortix/desktop-electron exec node scripts/ensure-runtime.js
+      - name: Prime build (miss)
+        run: pnpm --filter @kortix/desktop-electron exec electron-builder --linux --publish never
+        env:
+          KORTIX_DESKTOP_DEFAULT_URL: https://dev.kortix.com/projects
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Wipe everything but the proxy
         run: |
-          rm -rf node_modules apps/*/node_modules packages/*/node_modules
+          curl -s http://127.0.0.1:7471/stats; echo
+          rm -rf node_modules apps/*/node_modules packages/*/node_modules ~/.local/share/pnpm/store ~/.cache/electron ~/.cache/electron-builder packages/agent-tunnel/dist apps/desktop-electron/dist
           sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
-          pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
         env:
           npm_config_engine_strict: "false"
 
@@ -92,5 +106,6 @@ jobs:
           pnpm store path; du -sh "$(pnpm store path)" 2>/dev/null
           ls -la ~/.cache 2>/dev/null; du -sh ~/.cache/* 2>/dev/null
           cat /etc/os-release | head -3
+          curl -s http://127.0.0.1:7471/stats; echo; tail -20 /tmp/ap.log
           echo ==== net; cat /tmp/probe/net.log
           echo ==== vmstat; cat /tmp/probe/vmstat.log
