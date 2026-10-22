@@ -55,28 +55,26 @@ jobs:
       - name: Smoke test binary
         run: /tmp/kortix-cli-smoke version
 
-      - name: Decompose
+      - name: LocalReg
         if: always()
         run: |
           set +e
-          cd node_modules/.pnpm && du -s * 2>/dev/null | sort -rn | head -15 | awk '{printf "%6d MB %s\n", $1/1024, $2}'; cd - >/dev/null
-          du -sh ~/.local/share/pnpm/store node_modules/.pnpm
-          find . -name node_modules -type d -prune -exec rm -rf {} +
-          sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-          /usr/bin/time -f "offline-link wall=%e user=%U sys=%S" pnpm install --offline --frozen-lockfile --filter "@kortix/cli..." --reporter=silent
-          find . -name node_modules -type d -prune -exec rm -rf {} +
-          /usr/bin/time -f "offline-link-warmcache wall=%e user=%U sys=%S" pnpm install --offline --frozen-lockfile --filter "@kortix/cli..." --reporter=silent
-          /usr/bin/time -f "cpu-sha wall=%e" node -e "const c=require('crypto');let b=Buffer.alloc(1<<20);for(let i=0;i<2000;i++)c.createHash('sha512').update(b).digest()"
-          /usr/bin/time -f "gzip-1g wall=%e" sh -c 'head -c 1000000000 /dev/zero | gzip -1 | gzip -d > /dev/null'
-          mkdir -p /tmp/fb && /usr/bin/time -f "write-100k-files wall=%e user=%U sys=%S" python3 -c "
-          import os
-          d=b'x'*20000
-          for i in range(100000):
-            p='/tmp/fb/%d/%d'%(i//1000,i)
-            if i%1000==0: os.makedirs(os.path.dirname(p),exist_ok=True)
-            open(p,'wb').write(d)
-          "
-          grep -m1 'model name' /proc/cpuinfo; cat /proc/pressure/cpu /proc/pressure/io 2>/dev/null
+          clean() { find . -name node_modules -type d -prune -exec rm -rf {} +; rm -rf ~/.local/share/pnpm/store; sync; }
+          python3 .github/tarballs.py > /tmp/urls
+          s=$(date +%s.%N)
+          xargs -P 48 -I{} curl -sf --create-dirs -o /tmp/reg/{} https://registry.npmjs.org/{} < /tmp/urls
+          echo "download-all wall=$(echo "$(date +%s.%N) - $s" | bc) $(du -sh /tmp/reg | cut -f1) files=$(find /tmp/reg -type f | wc -l)"
+          cat > /tmp/srv.ts <<'TS'
+          Bun.serve({ port: 4873, async fetch(r) { const f = Bun.file("/tmp/reg" + decodeURIComponent(new URL(r.url).pathname)); return (await f.exists()) ? new Response(f) : new Response("nf", { status: 404 }); } });
+          TS
+          bun /tmp/srv.ts & sleep 1
+          for k in 1 2; do
+            clean
+            npm_config_registry=http://127.0.0.1:4873/ /usr/bin/time -f "local-reg-install wall=%e user=%U sys=%S" pnpm install --frozen-lockfile --filter "@kortix/cli..." --reporter=silent
+            clean
+            /usr/bin/time -f "npmjs-install wall=%e user=%U sys=%S" pnpm install --frozen-lockfile --filter "@kortix/cli..." --reporter=silent
+          done
+          for imp in copy hardlink; do clean; npm_config_registry=http://127.0.0.1:4873/ /usr/bin/time -f "local-reg-$imp wall=%e" pnpm install --frozen-lockfile --filter "@kortix/cli..." --reporter=silent --package-import-method=$imp; done
       - name: Diag
         if: always()
         run: |
