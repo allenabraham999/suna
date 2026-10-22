@@ -19,7 +19,20 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Probe (background)
+        run: |
+          cat /etc/resolv.conf | grep -v '^#'
+          mkdir -p /tmp/probe
+          nohup bash -c 'while :; do
+            t=$(date +%T.%N | cut -c1-12)
+            n=$(curl -s -o /dev/null -m 10 -w "%{time_namelookup}/%{time_connect}/%{time_appconnect}/%{time_total}/%{http_code}" https://registry.npmjs.org/-/ping)
+            g=$(curl -s -o /dev/null -m 10 -w "%{time_namelookup}/%{time_connect}/%{time_appconnect}/%{time_total}/%{http_code}" https://github.com/robots.txt)
+            st=$(awk "/^cpu /{print \$9}" /proc/stat)
+            echo "$t npm=$n gh=$g steal=$st load=$(cut -d" " -f1 /proc/loadavg)"
+            sleep 1
+          done' > /tmp/probe/net.log 2>&1 &
+          vmstat 1 > /tmp/probe/vmstat.log 2>&1 &
+
         uses: actions/checkout@v7
 
       - name: Install Node
@@ -35,7 +48,7 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel
+        run: pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
         env:
           npm_config_engine_strict: "false"
 
@@ -65,4 +78,5 @@ jobs:
           pnpm store path; du -sh "$(pnpm store path)" 2>/dev/null
           ls -la ~/.cache 2>/dev/null; du -sh ~/.cache/* 2>/dev/null
           cat /etc/os-release | head -3
-          cat ~/.npmrc 2>/dev/null; cat .npmrc
+          echo ==== net; cat /tmp/probe/net.log
+          echo ==== vmstat; cat /tmp/probe/vmstat.log
