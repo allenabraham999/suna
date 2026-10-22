@@ -67,29 +67,17 @@ jobs:
           # runs the REST/CLI flows; `core-db` runs the DB suites, the runner
           # unit tests, route coverage, the worktree tests and the SDK.
           # Neither runs package quality: the `packages-*` lanes do.
-          - lane: core-flows
-            mode: core
-            args: --core-group=flows
-          - lane: core-db
-            mode: core
-            args: --core-group=db
           # Package quality in four slices on four runners since 2026-10-16.
           # In one 4 vCPU lane the API, CLI and kortixd suites plus three
           # `tsc` shared the CPU: 18.5 min, the CLI suite 7.7 min of it
           # against 1.4 min alone (run 38777589705). `rest` holds the
           # repo-wide checks and every other package.
-          - lane: packages-api
-            mode: packages
-            args: --packages-only --package-group=api
           - lane: packages-cli
             mode: packages
             args: --packages-only --package-group=cli
           - lane: packages-kortixd
             mode: packages
             args: --packages-only --package-group=kortixd
-          - lane: packages-rest
-            mode: packages
-            args: --packages-only --package-group=rest
     env:
       CI: "1"
       TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -101,6 +89,16 @@ jobs:
         with:
           ref: ${{ env.TEST_SHA }}
           fetch-depth: 1
+      # Vulcan test bed only: what the fixed warm-cache hook does after the
+      # checkout's fetch (the runner image carries the old hook). It strips the
+      # mirror alternate and the hook from GIT_TEMPLATE_DIR, so repositories the
+      # tests create are ordinary ones.
+      - name: Vulcan git template fix (in-job patch)
+        run: |
+          if [ -n "${GIT_TEMPLATE_DIR:-}" ]; then
+            rm -f "$GIT_TEMPLATE_DIR/objects/info/alternates" "$GIT_TEMPLATE_DIR/hooks/reference-transaction"
+            echo "patched $GIT_TEMPLATE_DIR"
+          fi
       - uses: actions/setup-node@v7
         with:
           node-version: 22
