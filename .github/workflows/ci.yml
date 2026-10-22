@@ -85,6 +85,14 @@ jobs:
         env:
           API_IMAGE: kortix/kortix-api:selfhost-local
 
+      - name: pnpm probe
+        if: always()
+        run: |
+          set +e
+          du -sh node_modules/.pnpm/* 2>/dev/null | sort -h | tail -15
+          find ~/.local/share/pnpm/store/v3 -type f | wc -l
+          rm -rf node_modules apps/*/node_modules packages/*/node_modules
+          t=$(date +%s.%N); pnpm install --frozen-lockfile --offline --filter "@kortix/cli..." >/dev/null 2>&1; echo "offline relink: $(echo "$(date +%s.%N) - $t" | bc)s"
       - name: Net and disk probe
         if: always()
         run: |
