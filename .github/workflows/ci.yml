@@ -117,3 +117,23 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
           format: table
+
+  apt-dnat:
+    name: Sandbox image apt packages (dnat)
+    needs: changes
+    runs-on: ${{ vars.CI_RUNNER_S || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Route archive.ubuntu.com off its slow addresses (experiment)
+        run: |
+          sudo nft -f - <<'NFT'
+          table ip vx {
+            chain pre { type nat hook prerouting priority -101; ip daddr 91.189.91.0/24 tcp dport 80 dnat to 91.189.92.22; }
+            chain out { type nat hook output priority -101; ip daddr 91.189.91.0/24 tcp dport 80 dnat to 91.189.92.22; }
+          }
+          NFT
+          sudo nft list table ip vx
+      - name: Every apt package the sandbox image installs resolves
+        run: bash scripts/check-sandbox-apt-packages.sh
