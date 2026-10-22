@@ -23,11 +23,11 @@ jobs:
     name: Frontend build (${{ matrix.size }} ${{ matrix.copy }})
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 3
       matrix:
         copy: [1, 2, 3, 4, 5]
         mode: [warm]
-        size: [vulcan-4vcpu-ubuntu-2404, vulcan-8vcpu-ubuntu-2404]
+        size: [ubuntu-24.04]
     runs-on: ${{ matrix.size }}
     timeout-minutes: 20
     steps:
@@ -65,6 +65,15 @@ jobs:
       # (apps/web `bun test`); only the lint is unique to this job.
       - name: Enforce frontend lint
         run: pnpm --dir apps/web exec eslint src --quiet
+
+      - name: Lint with cache (cold, writes cache)
+        run: pnpm --dir apps/web exec eslint src --quiet --cache --cache-strategy content --cache-location $RUNNER_TEMP/eslintcache
+
+      - name: Lint with cache (warm)
+        run: pnpm --dir apps/web exec eslint src --quiet --cache --cache-strategy content --cache-location $RUNNER_TEMP/eslintcache
+
+      - name: Lint concurrency auto
+        run: pnpm --dir apps/web exec eslint src --quiet --concurrency auto || echo "no --concurrency support"
 
       # Next.js 16.3 turns on Turbopack's FileSystem cache for `next build`
       # (`experimental.turbopackFileSystemCacheForBuild`, default true) and
