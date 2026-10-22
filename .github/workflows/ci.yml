@@ -51,8 +51,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          [ "${{ matrix.v }}" = nc64 ] && export npm_config_network_concurrency=64
-          df -T / /mnt/vulcan-sticky 2>/dev/null; findmnt /mnt/vulcan-sticky 2>/dev/null; ls ~/.local/share/pnpm/store 2>&1
+          if [ "${{ matrix.v }}" = nc64 ]; then export npm_config_network_concurrency=64; fi
+          df -T / /mnt/vulcan-sticky 2>/dev/null; findmnt /mnt/vulcan-sticky 2>/dev/null; ls ~/.local/share/pnpm/store 2>&1 || true
           pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only --loglevel=info
         env:
           npm_config_engine_strict: "false"
