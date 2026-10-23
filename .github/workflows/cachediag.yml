@@ -11,6 +11,14 @@ jobs:
           ps -eo pid,args | grep -iE "edge|vulcan" | grep -v grep | cut -c1-200 || true
           sudo ls /etc/vulcan* /run/vulcan* 2>/dev/null | head -30 || true
           sudo grep -rhoE "https?://[0-9.]+:[0-9]+[^ \"']*" /etc/vulcan* /etc/systemd/system/*edge* 2>/dev/null | sort -u | head || true
+      - name: generate
+        run: |
+          mkdir -p synth; for i in $(seq 1 400); do if [ $((i%2)) = 0 ]; then head -c 4194304 /dev/urandom > synth/r$i.bin; else head -c 3145728 /dev/urandom | base64 -w 120 > synth/t$i.txt; fi; done
+          ip route
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: synth
+          key: synth-v1-diag-${{ github.run_id }}-${{ github.run_attempt }}
       - name: get signed url
         uses: actions/github-script@v7
         with:
@@ -35,7 +43,7 @@ jobs:
           par(){ n=$1; out=$2; step=$(( (SIZE + n - 1) / n )); pids=; for k in $(seq 0 $((n-1))); do a=$((k*step)); b=$((a+step-1)); [ $b -ge $SIZE ] && b=$((SIZE-1)); curl -s -r $a-$b -o $out.$k "$U" & pids="$pids $!"; done; wait $pids; }
           for n in 2 4 8; do echo "edge ${n}x ranges -> /dev/null: $(t par $n /dev/null)"; done
           for n in 4; do echo "edge ${n}x ranges -> files: $(t par $n /tmp/p)"; rm -f /tmp/p.*; done
-          V=$(sudo grep -rhoE "http://[0-9.]+:7470" /etc /run 2>/dev/null | head -1); echo vcache=$V
+          V=http://$(ip route | awk '/default/{print $3; exit}'):7470; echo vcache=$V
           if [ -n "$V" ]; then D=$(echo "$U" | sed -E "s#^https?://[^/]+#$V#"); for i in 1 2 3; do echo "direct single -> /dev/null: $(t curl -s -o /dev/null "$D")"; done; fi
           echo "node toolkit-like:"; cat > /tmp/dl.mjs <<'JS'
           import http from 'node:http'; import fs from 'node:fs'; import { pipeline } from 'node:stream/promises';
