@@ -32,32 +32,24 @@ jobs:
           THP0=$(sed -n 's/.*\[\(.*\)\].*/\1/p' $THP)
           export NCC=$RUNNER_TEMP/ncc
           thp() { echo "$1" | sudo tee $THP >/dev/null; }
+          steal() { awk '/^cpu /{print $9}' /proc/stat; }
           run() { # name, thp mode, env assignments...
             local name=$1 mode=$2; shift 2
             thp "$mode"
-            local s=$EPOCHREALTIME
-            env "$@" pnpm exec eslint src --quiet >/dev/null 2>&1 || true
-            local e=$EPOCHREALTIME
+            local st0=$(steal) s=$EPOCHREALTIME
+            local TIMEFORMAT='%U %S'
+            local cpu
+            cpu=$( { time env "$@" pnpm exec eslint src --quiet >/dev/null 2>&1; } 2>&1 | tail -1 )
+            local e=$EPOCHREALTIME st1=$(steal)
             thp "$THP0"
-            awk -v n="$name" -v s="$s" -v e="$e" 'BEGIN{printf "RESULT %-10s %6.2f\n", n, e-s}'
+            awk -v n="$name" -v s="$s" -v e="$e" -v c="$cpu" -v st=$((st1-st0)) 'BEGIN{split(c,a," "); printf "RESULT %-10s wall %6.2f cpu %6.2f steal %5.2f\n", n, e-s, a[1]+a[2], st/100}'
           }
           run nccprime "$THP0" NODE_COMPILE_CACHE=$NCC
-          for round in 1 2 3; do
+          for round in 1 2 3 4; do
             run plain "$THP0" X=1
             run thp always X=1
             run semi64 "$THP0" NODE_OPTIONS=--max-semi-space-size=64
-            run ncc "$THP0" NODE_COMPILE_CACHE=$NCC
             run thpsemi always NODE_OPTIONS=--max-semi-space-size=64
-            run all always NODE_COMPILE_CACHE=$NCC NODE_OPTIONS=--max-semi-space-size=64
+            run ncc "$THP0" NODE_COMPILE_CACHE=$NCC
           done
           grep -E "AnonHugePages" /proc/meminfo
-      - name: eslint cache probe (info)
-        run: |
-          cd apps/web
-          t() { local s=$EPOCHREALTIME; "$@" >/dev/null 2>&1; local e=$EPOCHREALTIME; awk -v n="$N" -v s="$s" -v e="$e" 'BEGIN{printf "RESULT %-10s %6.2f\n", n, e-s}'; }
-          N=cachecold t pnpm exec eslint src --quiet --cache --cache-location /tmp/elc --cache-strategy content
-          f=$(git ls-files src | grep -E "\.tsx$" | head -1); echo "// touch" >> "$f"
-          N=cachewarm t pnpm exec eslint src --quiet --cache --cache-location /tmp/elc --cache-strategy content
-          N=concauto t pnpm exec eslint src --quiet --concurrency=auto
-          N=conc-thp t bash -c 'echo always | sudo tee /sys/kernel/mm/transparent_hugepage/enabled >/dev/null; pnpm exec eslint src --quiet --concurrency=auto'
-          git checkout -- "$f"
