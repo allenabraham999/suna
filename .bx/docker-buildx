@@ -1,0 +1,94 @@
+#!/bin/bash
+# docker buildx, as the runner's CLI plugin (~/.docker/cli-plugins/docker-buildx,
+# ahead of the real one in Docker's search order). Everything is passed to the
+# real buildx untouched, except one case: on a runner with a sticky disk
+# (docs/sticky-disks.md), the builder docker/setup-buildx-action creates keeps
+# BuildKit's state on the disk, so a workflow's builds start warm without
+# changing the workflow.
+#
+# setup-buildx-action names its builder builder-<uuid>, a new name every run,
+# and removes it (state volume included) in its post step, so its cache never
+# outlives the job. BuildKit's state is the volume buildx_buildkit_<name>0_state,
+# which buildx mounts at /var/lib/buildkit and dockerd creates on first use. If
+# a volume of that name already exists, it is used as it is: created here first,
+# as a bind of $VULCAN_STICKY_BUILDKIT (on the sticky disk, made by run-job.sh),
+# it holds the previous runs' state. Removing a bind volume removes its mount
+# point, never what the bind points at, so the post step's `buildx rm` leaves
+# the state for the next run.
+#
+# Only for a create that looks like setup-buildx-action's default: a local
+# docker-container builder named builder-<uuid>, with no endpoint, node, append
+# or driver options (an image or network of its own could need state of its
+# own). BuildKit locks its state directory, so one builder at a time has it;
+# any other builder (a second one in the same job) gets the usual new volume.
+# Nothing here can fail the create: any doubt, and buildx runs as it would.
+
+real=""
+for d in /usr/local/lib/docker/cli-plugins /usr/local/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins; do
+  if [ -x "$d/docker-buildx" ] && [ "$d/docker-buildx" -ef "$0" ]; then continue; fi
+  if [ -x "$d/docker-buildx" ]; then real="$d/docker-buildx"; break; fi
+done
+if [ -z "$real" ]; then
+  echo "docker-buildx: the real buildx plugin is not installed" >&2
+  exit 1
+fi
+
+# The state volume to pre-create for this create's builder, or nothing.
+vulcan_buildkit_volume() {
+  local dir="${VULCAN_STICKY_BUILDKIT:-}" name="" driver="docker-container" a
+  [ -n "$dir" ] && [ -d "$dir" ] || return 1
+  # Another daemon (a remote host, a context of its own) has no sticky disk.
+  [ -z "${DOCKER_HOST:-}" ] || return 1
+  [ -z "${DOCKER_CONTEXT:-}" ] || [ "${DOCKER_CONTEXT}" = default ] || return 1
+  [ "${1:-}" = buildx ] && [ "${2:-}" = create ] || return 1
+  shift 2
+  while [ $# -gt 0 ]; do
+    a="$1"; shift
+    case "$a" in
+      --name) name="${1:-}"; shift ;;
+      --name=*) name="${a#--name=}" ;;
+      --driver) driver="${1:-}"; shift ;;
+      --driver=*) driver="${a#--driver=}" ;;
+      --buildkitd-flags|--buildkitd-config|--config|--platform|--timeout) shift ;;
+      --buildkitd-flags=*|--buildkitd-config=*|--config=*|--platform=*|--timeout=*) ;;
+      --use|--bootstrap) ;;
+      # An endpoint, a node, an append, driver options, or a flag not known here.
+      *) return 1 ;;
+    esac
+  done
+  [ "$driver" = docker-container ] || return 1
+  [[ "$name" =~ ^builder-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  echo "buildx_buildkit_${name}0_state"
+}
+
+# Makes $1 a bind of the shared state, unless another builder holds it.
+vulcan_buildkit_claim() {
+  local vol="$1" v ids
+  for v in $(docker volume ls -q --filter label=vulcan.sticky-buildkit 2>/dev/null); do
+    # A running builder has it: this one gets a volume of its own.
+    ids="$(docker ps -q --filter "volume=$v" 2>/dev/null)" || return 1
+    [ -z "$ids" ] || return 1
+    # Left by a job whose post step never ran: its stopped builder and the
+    # bind go (the state stays where the bind pointed).
+    ids="$(docker ps -aq --filter "volume=$v" 2>/dev/null)" || return 1
+    # shellcheck disable=SC2086
+    [ -z "$ids" ] || docker rm -f $ids >/dev/null 2>&1 || return 1
+    docker volume rm "$v" >/dev/null 2>&1 || return 1
+  done
+  docker volume inspect "$vol" >/dev/null 2>&1 && return 1
+  docker volume create --driver local --opt type=none --opt o=bind --opt "device=$VULCAN_STICKY_BUILDKIT" \
+    --label vulcan.sticky-buildkit=1 "$vol" >/dev/null 2>&1
+}
+
+vol="$(vulcan_buildkit_volume "$@" 2>/dev/null)" || vol=""
+if [ -n "$vol" ] && vulcan_buildkit_claim "$vol"; then
+  "$real" "$@"
+  rc=$?
+  if [ "$rc" = 0 ]; then
+    echo "Vulcan: this builder keeps BuildKit's state on the sticky disk ($VULCAN_STICKY_BUILDKIT), so its cache carries over to the next run." >&2
+  else
+    docker volume rm "$vol" >/dev/null 2>&1 || true
+  fi
+  exit "$rc"
+fi
+exec "$real" "$@"
