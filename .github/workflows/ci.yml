@@ -87,5 +87,5 @@ jobs:
       - name: Diag
         if: always()
         run: |
-          curl -s http://127.0.0.1:7471/stats 2>/dev/null; echo; tail -5 /tmp/ap.log 2>/dev/null
+          curl -s http://127.0.0.1:7471/stats 2>/dev/null || true; echo; tail -5 /tmp/ap.log 2>/dev/null || true
           ls -la ~/.cache/electron ~/.cache/electron-builder 2>/dev/null | head -20
