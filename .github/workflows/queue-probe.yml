@@ -9,29 +9,28 @@ jobs:
   probe:
     strategy:
       matrix:
-        i: [1]
+        i: [1, 2]
     runs-on: vulcan-4vcpu-ubuntu-2404
     steps:
       - name: timeline
         run: |
-          now=$(date +%s.%N)
-          up=$(cut -d' ' -f1 /proc/uptime)
-          echo "NOW $(date -u +%FT%T.%3NZ)"
-          echo "BOOT $(date -u -d @$(echo "$now - $up" | bc) +%FT%T.%3NZ)"
-          echo "--- processes"
-          ps -eo pid,lstart,etimes,args --sort=start_time | grep -E "run-job|dockerd|containerd|Runner.Listener|Runner.Worker|vulcan-edge|run.sh|systemd$|pt-agent|envd" | grep -v grep | cut -c1-200
-          echo "--- elapsed-ms per proc"
-          for p in $(pgrep -f "run-job.sh|dockerd|Runner.Listener|Runner.Worker"); do
-            st=$(awk '{print $22}' /proc/$p/stat); echo "$p $(echo "scale=3; $st/$(getconf CLK_TCK)" | bc)s-after-boot $(tr '\0' ' ' </proc/$p/cmdline | cut -c1-80)"; done
-          echo "--- dockerd.log head"
-          sudo head -3 /var/log/dockerd.log 2>/dev/null | cut -c1-200; sudo grep -m1 "API listen" /var/log/dockerd.log | cut -c1-200
+          sudo python3 - <<'PY'
+          import os,time,glob,re
+          now=time.time(); up=float(open('/proc/uptime').read().split()[0]); boot=now-up; hz=os.sysconf('SC_CLK_TCK')
+          def iso(t): return time.strftime('%H:%M:%S',time.gmtime(t))+('%.3f'%(t%1))[1:]
+          print('NOW ',iso(now)); print('BOOT',iso(boot))
+          rows=[]
+          for p in os.listdir('/proc'):
+            if not p.isdigit(): continue
+            try:
+              st=open(f'/proc/{p}/stat').read(); cmd=open(f'/proc/{p}/cmdline').read().replace('\0',' ')[:90]
+            except Exception: continue
+            start=int(st.rsplit(')',1)[1].split()[19])/hz
+            if re.search(r'run-job|dockerd|containerd |Runner\.|run\.sh|edge|curl|sudo|sleep|envd|agent|systemd ',cmd): rows.append((start,p,cmd))
+          for s,p,c in sorted(rows): print('PROC',iso(boot+s),'+%.2f'%s,p,re.sub(r'jitconfig \S+','jitconfig <x>',c))
+          PY
+          echo "--- dockerd.log"; sudo grep -E "Starting up|API listen|Daemon has completed" /var/log/dockerd.log | cut -c1-140
+          echo "--- vulcan logs"; for f in /var/log/vulcan-*.log; do echo "## $f"; sudo head -5 $f | cut -c1-200; done
           echo "--- runner diag"
           d=/home/runner/actions-runner/_diag
-          ls -la $d
-          grep -hE "Runner.Listener|Starting|session|Session|GetNextMessage|Message|Job request|JobDispatcher|Running job|broker|Connect|connected|Listening" $d/Runner_*.log | cut -c1-220 | head -60
-          echo "--- worker diag head"
-          head -5 $d/Worker_*.log | cut -c1-200
-          grep -hE "Job ID|Start|Setup" $d/Worker_*.log | head -10 | cut -c1-200
-          echo "--- run-job stderr / journal"
-          sudo journalctl --no-pager -b 2>/dev/null | head -0
-          systemd-analyze 2>/dev/null || true
+          grep -hE "currentAssemblyLocation|Attempt to create session|GetConnectionData|Session created|Listening for Jobs|Acknowledging|received|Running job" $d/Runner_*.log | cut -c1-200 | head -30
