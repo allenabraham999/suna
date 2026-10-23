@@ -16,7 +16,7 @@ jobs:
       - name: stand-in image store
         if: ${{ !endsWith(github.ref_name, '-none') }}
         env:
-          STORE: ${{ endsWith(github.ref_name, '-cd') && 'containerd' || 'classic' }}
+          STORE: ${{ contains(github.ref_name, '-cd') && 'containerd' || 'classic' }}
         run: |
           df -h /mnt/vulcan-sticky 2>/dev/null || true
           sudo ls /mnt/vulcan-sticky/docker 2>/dev/null || true
@@ -69,7 +69,7 @@ jobs:
           API_IMAGE: kortix/kortix-api:selfhost-local
 
       - name: extra container-builder load
-        if: ${{ !endsWith(github.ref_name, '-none') }}
+        if: ${{ endsWith(github.ref_name, 'x') }}
         run: |
           docker buildx ls
           b=$(docker buildx ls --format '{{.Name}}' | grep '^builder-' | head -1)
