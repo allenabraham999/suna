@@ -24,16 +24,6 @@ jobs:
           echo VULCAN_STICKY_BUILDKIT=/mnt/vulcan-sticky/docker/vulcan-buildkit >> "$GITHUB_ENV"
           sudo du -sh /mnt/vulcan-sticky/docker/vulcan-buildkit; sudo ls /mnt/vulcan-sticky/docker/vulcan-buildkit
           docker volume ls; df -h /mnt/vulcan-sticky
-      - name: dbg
-        if: ${{ endsWith(github.ref_name, '-shim') }}
-        run: |
-          sed -i '2i exec 7>>/tmp/shim.trace; BASH_XTRACEFD=7; set -x' ~/.docker/cli-plugins/docker-buildx
-          n=builder-00000000-0000-0000-0000-000000000000
-          docker buildx create --name $n --driver docker-container; echo rc=$?
-          cat /tmp/shim.trace | tail -60
-          docker volume ls; docker volume inspect buildx_buildkit_${n}0_state || true
-          docker buildx rm $n || true; docker volume ls
-          sed -i '2d' ~/.docker/cli-plugins/docker-buildx; head -3 ~/.docker/cli-plugins/docker-buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build API image
@@ -47,3 +37,9 @@ jobs:
           cache-from: type=registry,ref=kortix/kortix-api:dev-buildcache
       - name: Use the image
         run: docker image inspect kortix/kortix-api:selfhost-local --format '{{.Id}} {{.Size}}' && docker run --rm --entrypoint sh kortix/kortix-api:selfhost-local -c 'echo ran'
+      - name: evidence
+        if: ${{ endsWith(github.ref_name, '-shim') }}
+        run: |
+          docker volume ls --filter label=vulcan.sticky-buildkit
+          docker inspect $(docker ps -q --filter name=buildx_buildkit_) --format '{{range .Mounts}}{{.Name}} -> {{.Source}}{{"\n"}}{{end}}' || true
+          sudo du -sh /mnt/vulcan-sticky/docker/vulcan-buildkit; df -h /mnt/vulcan-sticky
