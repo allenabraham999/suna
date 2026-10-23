@@ -37,3 +37,9 @@ jobs:
           cache-from: type=registry,ref=kortix/kortix-api:dev-buildcache
       - name: Use the image
         run: docker image inspect kortix/kortix-api:selfhost-local --format '{{.Id}} {{.Size}}' && docker run --rm --entrypoint sh kortix/kortix-api:selfhost-local -c 'echo ran'
+      - name: evidence
+        if: ${{ endsWith(github.ref_name, '-shim') }}
+        run: |
+          docker volume ls --filter label=vulcan.sticky-buildkit
+          docker inspect $(docker ps -q --filter name=buildx_buildkit_) --format '{{range .Mounts}}{{.Name}} -> {{.Source}}{{"\n"}}{{end}}' || true
+          sudo du -sh /mnt/vulcan-sticky/docker/vulcan-buildkit; df -h /mnt/vulcan-sticky
