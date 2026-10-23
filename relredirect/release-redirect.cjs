@@ -16,16 +16,14 @@
 // action can download are covered: the http/https modules (@actions/tool-cache,
 // @actions/http-client, most libraries) and the global fetch().
 //
-// Never worse than GitHub:
-// - the cache does not accept the connection in time: the same request goes
-//   to GitHub on a fresh connection, and the cache is skipped for the rest of
-//   the process;
-// - the cache does not have the file: it answers 302 to the GitHub URL, the
-//   client follows it, and that request goes to GitHub untouched (fetch():
-//   the original request is made instead);
-// - the cache answers anything but 200/206/3xx, never answers, or drops a
-//   download: the cache is skipped for the rest of the process (what the
-//   caller saw is a failed attempt; tool-cache retries it, now from GitHub).
+// Never worse than GitHub: until the first byte of an answer reaches the
+// caller, any trouble sends the same request to GitHub instead, so the caller
+// sees GitHub's answer and nothing else. That covers the cache not accepting
+// the connection in time, not having the file (it answers 302; the caller
+// never sees it), answering anything but 200/206, or not answering in time.
+// Except for a plain miss, the cache is then skipped for the rest of the
+// process. A download the cache drops halfway is a failed attempt the caller
+// sees (tool-cache retries it, now from GitHub).
 // The cache fetched the file from GitHub anonymously over TLS, so the bytes
 // are the public asset. VULCAN_RELEASE_REDIRECT=0 in a step's env turns this
 // off for that step (the wrapper then starts Node without it).
@@ -68,7 +66,6 @@
   const tls = require('tls');
 
   let off = false;               // the cache misbehaved: GitHub for the rest of the process
-  const direct = new Set();      // assets the cache just redirected: their next request goes to GitHub
 
   const say = msg => { try { process.stderr.write(`vulcan release cache: ${msg}\n`); } catch (e) { /* closed */ } };
   const giveUp = why => { if (!off) say(`${why}; downloading from GitHub`); off = true; };
@@ -85,7 +82,6 @@
     if (!FULL_NAME.test(name) || !repos.has(name.toLowerCase())) return null;
     if (!TAG.test(tag) || !FILE.test(file) || tag.includes('..') || file.includes('..')) return null;
     return {
-      key: `${name.toLowerCase()}/${tag}/${file}`,
       label: `${name} ${tag}/${file}`,
       path: `/releases/v1/${owner}/${repo}/${encodeURIComponent(tag)}/${encodeURIComponent(file)}`,
     };
@@ -96,10 +92,110 @@
   // ─── http.request / https.request ─────────────────────────────────────────
   //
   // The caller gets a real ClientRequest for its GitHub URL, created by the
-  // original function. Only its connection differs: createConnection dials the
-  // cache and rewrites the request line to the cache's path; when the cache
-  // does not accept in time, it dials GitHub instead and the request goes out
-  // as the caller wrote it.
+  // original function. Only its connection differs (createConnection): a
+  // stream that holds the request until it is complete, sends it to the cache
+  // with the cache's path in the request line, and looks at the status line.
+  // 200/206: the cache's answer flows to the caller. Anything else, or no
+  // answer in time: the request goes to GitHub, byte for byte as the caller
+  // wrote it, and GitHub's answer flows to the caller.
+
+  function relay(o, asset, target) {
+    const { Duplex } = require('stream');
+    let request = Buffer.alloc(0);
+    let up = null;          // the connection whose answer the caller gets
+    let started = false;
+    let timeoutMs = 0;
+    const d = new Duplex({
+      write(chunk, encoding, cb) {
+        const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+        if (up) { up.write(b, cb); return; }
+        request = Buffer.concat([request, b]);
+        cb();
+        if (!started && request.indexOf('\r\n\r\n') !== -1) { started = true; viaCache(); }
+      },
+      read() { if (up && up.isPaused()) up.resume(); },
+      final(cb) { if (up) up.end(); cb(); },
+      destroy(err, cb) { if (up) up.destroy(); cb(err); },
+    });
+    d.setTimeout = (ms, cb) => { timeoutMs = ms; if (cb) d.once('timeout', cb); if (up) up.setTimeout(ms); return d; };
+    d.setNoDelay = () => d;
+    d.setKeepAlive = () => d;
+    d.ref = () => d;
+    d.unref = () => d;
+
+    function use(sock, fromCache, head) {
+      up = sock;
+      let ended = false;
+      sock.on('data', c => { if (!d.push(c)) sock.pause(); });
+      sock.on('end', () => { ended = true; d.push(null); });
+      sock.on('timeout', () => d.emit('timeout'));
+      sock.on('error', e => { if (fromCache) giveUp('download dropped'); d.destroy(e); });
+      sock.on('close', () => { if (!ended && !d.destroyed) { if (fromCache) giveUp('download dropped'); d.destroy(new Error('socket hang up')); } });
+      if (timeoutMs) sock.setTimeout(timeoutMs);
+      if (head) d.push(head);
+    }
+
+    function toGithub() {
+      let sock;
+      try {
+        sock = target.protocol === 'https:'
+          ? tls.connect({
+              host: target.hostname, port: Number(target.port) || 443, servername: o.servername || target.hostname, ALPNProtocols: ['http/1.1'],
+              ca: o.ca, cert: o.cert, key: o.key, pfx: o.pfx, passphrase: o.passphrase,
+              rejectUnauthorized: o.rejectUnauthorized, lookup: o.lookup, family: o.family,
+            })
+          : net.connect({ host: target.hostname, port: Number(target.port) || 80, lookup: o.lookup, family: o.family });
+      } catch (e) { d.destroy(e); return; }
+      use(sock, false, null);
+      sock.write(request);
+    }
+
+    function viaCache() {
+      const first = request.indexOf('\r\n');
+      const line = request.toString('latin1', 0, first);
+      if (off || line !== `GET ${target.path} HTTP/1.1`) { toGithub(); return; }
+      let settled = false;
+      let answer = Buffer.alloc(0);
+      const c = net.connect({ host: cacheHost, port: cachePort });
+      let timer = setTimeout(() => fail('did not accept the connection in time'), connectMs);
+      const fail = (why, quiet) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        c.removeAllListeners('data');
+        c.destroy();
+        if (!quiet) giveUp(`cache ${why}`);
+        toGithub();
+      };
+      c.once('connect', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fail('did not answer in time'), responseMs);
+        c.write(Buffer.concat([Buffer.from(`GET ${asset.path} HTTP/1.1`, 'latin1'), request.subarray(first)]));
+      });
+      c.on('data', chunk => {
+        if (settled) return;
+        answer = Buffer.concat([answer, chunk]);
+        const eol = answer.indexOf('\r\n');
+        if (eol === -1 && answer.length < 64) return;
+        const m = /^HTTP\/1\.[01] (\d{3})/.exec(answer.toString('latin1', 0, eol === -1 ? answer.length : eol));
+        const st = m ? Number(m[1]) : 0;
+        if (st === 200 || st === 206) {
+          settled = true;
+          clearTimeout(timer);
+          c.removeAllListeners('data');
+          c.removeAllListeners('error');
+          c.removeAllListeners('close');
+          say(`${asset.label} from the cache`);
+          use(c, true, answer);
+        } else {
+          fail(`answered ${st || 'something else'}`, st >= 300 && st < 400);   // 3xx: not stored yet, a plain miss
+        }
+      });
+      c.once('error', e => fail(e && e.code ? e.code : 'unreachable'));
+      c.once('close', () => fail('closed the connection'));
+    }
+    return d;
+  }
 
   function intercept(mod, original, args) {
     let opts;
@@ -120,87 +216,12 @@
     if ((mod === https) !== (protocol === 'https:')) return null;
     const hostname = opts.hostname || String(opts.host || 'localhost').replace(/:\d+$/, '');
     const port = opts.port || opts.defaultPort;
-    const asset = assetOf(protocol, hostname, port, opts.path || '/');
+    const path = opts.path || '/';
+    const asset = assetOf(protocol, hostname, port, path);
     if (!asset) return null;
-    if (direct.delete(asset.key)) return null;
-
-    const firstLine = `GET ${opts.path} HTTP/1.1\r\n`;
-    const cacheLine = `GET ${asset.path} HTTP/1.1\r\n`;
-    let viaCache = false;
-    let answered = false;
-    let req = null;
-    let responseTimer = null;
-
-    function createConnection(o, done) {
-      let settled = false;
-      const s = net.connect({ host: cacheHost, port: cachePort });
-      const timer = setTimeout(() => toGithub('did not accept the connection in time'), connectMs);
-      s.once('connect', () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        viaCache = true;
-        const write = s.write;
-        s.write = function (chunk, encoding, callback) {
-          s.write = write;
-          const text = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('latin1') : '';
-          if (!text.startsWith(firstLine)) {
-            // Not the request this connection was made for: send nothing.
-            giveUp('unexpected request');
-            s.destroy(new Error('vulcan release cache: unexpected request'));
-            return false;
-          }
-          const out = cacheLine + text.slice(firstLine.length);
-          return write.call(this, typeof chunk === 'string' ? out : Buffer.from(out, 'latin1'), typeof chunk === 'string' ? 'latin1' : encoding, callback);
-        };
-        responseTimer = setTimeout(() => {
-          if (answered) return;
-          giveUp('no answer');
-          if (req) req.destroy(new Error('vulcan release cache: no answer'));
-        }, responseMs);
-        if (responseTimer.unref) responseTimer.unref();
-        done(null, s);
-      });
-      s.once('error', e => toGithub(e && e.code ? e.code : 'unreachable'));
-      function toGithub(why) {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        s.destroy();
-        giveUp(`cache ${why}`);
-        let sock;
-        try {
-          sock = protocol === 'https:'
-            ? tls.connect({
-                host: hostname, port: Number(port) || 443, servername: o.servername || hostname, ALPNProtocols: ['http/1.1'],
-                ca: o.ca, cert: o.cert, key: o.key, pfx: o.pfx, passphrase: o.passphrase,
-                rejectUnauthorized: o.rejectUnauthorized, lookup: o.lookup, family: o.family,
-              })
-            : net.connect({ host: hostname, port: Number(port) || 80, lookup: o.lookup, family: o.family });
-        } catch (e) { done(e); return; }
-        done(null, sock);
-      }
-    }
-
-    const reqOpts = Object.assign({}, opts, { agent: undefined, createConnection });
-    req = cb ? original.call(mod, reqOpts, cb) : original.call(mod, reqOpts);
-    req.prependListener('response', res => {
-      answered = true;
-      clearTimeout(responseTimer);
-      if (!viaCache) return;
-      const st = res.statusCode;
-      if (st === 200 || st === 206) {
-        say(`${asset.label} from the cache`);
-        res.once('aborted', () => giveUp('download dropped'));
-        res.once('error', () => giveUp('download dropped'));
-      } else if (st >= 300 && st < 400) {
-        direct.add(asset.key);   // not stored yet: the redirect to GitHub goes out untouched
-      } else {
-        giveUp(`answered ${st}`);
-      }
-    });
-    req.once('close', () => clearTimeout(responseTimer));
-    return req;
+    const target = { protocol, hostname, port, path };
+    const reqOpts = Object.assign({}, opts, { agent: undefined, createConnection: o => relay(o, asset, target) });
+    return cb ? original.call(mod, reqOpts, cb) : original.call(mod, reqOpts);
   }
 
   function wrap(mod, original) {
@@ -240,7 +261,7 @@
           }
         }
       } catch (e) { asset = null; }
-      if (!asset || direct.delete(asset.key)) return originalFetch.call(globalThis, input, init);
+      if (!asset) return originalFetch.call(globalThis, input, init);
 
       const ac = new AbortController();
       const signal = init && init.signal;
