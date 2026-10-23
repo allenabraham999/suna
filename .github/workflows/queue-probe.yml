@@ -34,17 +34,12 @@ jobs:
           echo "--- runner diag"
           d=/home/runner/actions-runner/_diag
           grep -hE "Session created|Acknowledging|received" $d/Runner_*.log | cut -c1-160 | head
-      - name: contention experiment
+      - name: network timings
         run: |
-          cd /home/runner/actions-runner
-          L() { local t0=$(date +%s%N); ./bin/Runner.Listener --version >/dev/null 2>&1; echo $(( ($(date +%s%N)-t0)/1000000 )); }
-          D() { sudo pkill -x dockerd; while pgrep -x dockerd >/dev/null; do sleep 0.05; done; sudo rm -f /var/run/docker.pid; }
-          for i in 1 2 3 4 5; do
-            D; sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-            a=$(L)
-            sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-            t0=$(date +%s%N); sudo sh -c 'dockerd >/tmp/d.log 2>&1 &'; b=$(L)
-            until docker info >/dev/null 2>&1; do sleep 0.02; done; dk=$(( ($(date +%s%N)-t0)/1000000 ))
-            echo "EXP alone_ms=$a with_dockerd_ms=$b dockerd_ready_ms=$dk"
+          cat /etc/resolv.conf | grep -v "^#"
+          for h in broker.actions.githubusercontent.com api.github.com pipelinesghubeus22.actions.githubusercontent.com run-actions-1-azure-eastus.actions.githubusercontent.com results-receiver.actions.githubusercontent.com; do
+            for i in 1 2; do curl -s -o /dev/null -w "$h dns=%{time_namelookup} tcp=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} ip=%{remote_ip}\n" https://$h/ ; done
           done
-# nonce 1792738602
+          getent hosts broker.actions.githubusercontent.com
+          ip route | head -3
+# nonce 1792738755
