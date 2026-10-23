@@ -9,7 +9,7 @@ jobs:
   probe:
     strategy:
       matrix:
-        i: [1, 2]
+        i: [1]
     runs-on: vulcan-4vcpu-ubuntu-2404
     steps:
       - name: timeline
@@ -33,5 +33,18 @@ jobs:
           echo "--- vulcan logs"; for f in /var/log/vulcan-*.log; do echo "## $f"; sudo head -5 $f | cut -c1-200; done
           echo "--- runner diag"
           d=/home/runner/actions-runner/_diag
-          grep -hE "currentAssemblyLocation|Attempt to create session|GetConnectionData|Session created|Listening for Jobs|Acknowledging|received|Running job" $d/Runner_*.log | cut -c1-200 | head -30
-# nonce 1792737727
+          grep -hE "Session created|Acknowledging|received" $d/Runner_*.log | cut -c1-160 | head
+      - name: contention experiment
+        run: |
+          cd /home/runner/actions-runner
+          L() { local t0=$(date +%s%N); ./bin/Runner.Listener --version >/dev/null 2>&1; echo $(( ($(date +%s%N)-t0)/1000000 )); }
+          D() { sudo pkill -x dockerd; while pgrep -x dockerd >/dev/null; do sleep 0.05; done; sudo rm -f /var/run/docker.pid; }
+          for i in 1 2 3 4 5; do
+            D; sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+            a=$(L)
+            sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+            t0=$(date +%s%N); sudo sh -c 'dockerd >/tmp/d.log 2>&1 &'; b=$(L)
+            until docker info >/dev/null 2>&1; do sleep 0.02; done; dk=$(( ($(date +%s%N)-t0)/1000000 ))
+            echo "EXP alone_ms=$a with_dockerd_ms=$b dockerd_ready_ms=$dk"
+          done
+# nonce 1792738602
