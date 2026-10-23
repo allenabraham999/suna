@@ -1,0 +1,92 @@
+name: BX
+# Bench copy of ci.yml's self-host-schema job (steps verbatim). The optional
+# first step stands in for a runner-image change: it pins dockerd's image store.
+on:
+  workflow_dispatch:
+    inputs:
+      store:
+        description: none | classic | containerd
+        default: none
+      extra:
+        description: also time a docker-container builder --load build (build-push-action pattern)
+        default: 'false'
+permissions:
+  contents: read
+jobs:
+  self-host-schema:
+    name: Self-host schema bootstrap
+    runs-on: ${{ vars.CI_RUNNER_M || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - name: stand-in image store
+        if: inputs.store != 'none'
+        env:
+          STORE: ${{ inputs.store }}
+        run: |
+          df -h /mnt/vulcan-sticky 2>/dev/null || true
+          sudo du -sh /mnt/vulcan-sticky/docker/* 2>/dev/null || true
+          docker info --format 'before: driver={{.Driver}} images={{.Images}}'
+          v=false; [ "$STORE" = containerd ] && v=true
+          f=/etc/docker/daemon.json
+          (sudo cat $f 2>/dev/null || echo '{}') | jq --argjson v $v '.features["containerd-snapshotter"]=$v' > /tmp/daemon.json
+          sudo cp /tmp/daemon.json $f
+          pid=$(pidof dockerd); args=$(tr '\0' ' ' < /proc/$pid/cmdline)
+          t0=$(date +%s.%N)
+          sudo kill $pid; for _ in $(seq 100); do sudo kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+          sudo sh -c "nohup $args >>/var/log/dockerd.log 2>&1 &"
+          for _ in $(seq 120); do docker info >/dev/null 2>&1 && break; sleep 0.5; done
+          echo "restart $(echo "$(date +%s.%N) - $t0" | bc)s"
+          docker info --format 'after: driver={{.Driver}} images={{.Images}}'
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install pnpm
+        run: |
+          corepack enable pnpm
+          echo "pnpm: $(pnpm -v)  node: $(node -v)  bun: $(bun -v)"
+
+      - name: Install dependencies (CLI + workspace deps)
+        run: pnpm install --frozen-lockfile --filter "@kortix/cli..."
+        env:
+          npm_config_engine_strict: "false"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build API image
+        # --load: the buildx builder is a separate buildkitd, so the result
+        # must be exported into the local daemon for the compose stack below.
+        # The dev image's registry cache warms it (read-only).
+        run: docker build --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t kortix/kortix-api:selfhost-local .
+
+      - name: Self-host schema-bootstrap check (fresh DB)
+        run: bash apps/cli/scripts/self-host-e2e/schema-check.sh
+        env:
+          API_IMAGE: kortix/kortix-api:selfhost-local
+
+      - name: extra container-builder load
+        if: inputs.extra == 'true'
+        run: |
+          docker buildx ls
+          b=$(docker buildx ls --format '{{.Name}}' | grep '^builder-' | head -1)
+          echo "builder=$b"
+          t0=$(date +%s)
+          docker buildx build --builder "$b" --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t bx/api:container . 2>&1 | grep -E '^#[0-9]+ (exporting|sending|importing|unpacking|naming|writing|DONE [0-9]{2,})|ERROR' | tail -20
+          echo "container-builder build+load: $(( $(date +%s) - t0 ))s"
+          # Same with a kept-state builder (what a persistent builder would give on its second use)
+          docker buildx create --name bxkeep --driver docker-container --use=false >/dev/null 2>&1 || true
+          t0=$(date +%s)
+          docker buildx build --builder bxkeep --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t bx/api:keep . 2>&1 | grep -E '^#[0-9]+ (exporting|sending|importing|unpacking|naming|writing|DONE [0-9]{2,})|ERROR' | tail -20
+          echo "kept-state builder build+load: $(( $(date +%s) - t0 ))s"
+          docker buildx stop bxkeep || true
+          docker system df || true
+          df -h /mnt/vulcan-sticky || true
