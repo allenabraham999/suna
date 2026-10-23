@@ -1,0 +1,46 @@
+name: cacheupdiag
+on:
+  push:
+    branches: [bs/cacheupdiag-1]
+jobs:
+  diag:
+    runs-on: vulcan-4vcpu-ubuntu-2404
+    steps:
+      - name: archive
+        run: |
+          mkdir -p synth; for i in $(seq 1 400); do if [ $((i%2)) = 0 ]; then head -c 4194304 /dev/urandom > synth/r$i.bin; else head -c 3145728 /dev/urandom | base64 -w 120 > synth/t$i.txt; fi; done
+          tar -cf - synth | zstdmt -q -o /tmp/a.tzst; rm -rf synth; ls -l /tmp/a.tzst
+          mkdir -p /tmp/b && cd /tmp/b && split -b 67108864 -d -a 4 /tmp/a.tzst blk.; ls | wc -l; cat /tmp/b/* > /dev/null
+      - name: upload tests
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs'), crypto = require('crypto'), { execSync } = require('child_process');
+            const base = process.env.ACTIONS_RESULTS_URL.replace(/\/+$/, '');
+            const call = async (m, body) => (await fetch(`${base}/twirp/github.actions.results.api.v1.CacheService/${m}`, {
+              method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.ACTIONS_RUNTIME_TOKEN}` }, body: JSON.stringify(body) })).json();
+            const files = fs.readdirSync('/tmp/b').sort();
+            const size = fs.statSync('/tmp/a.tzst').size;
+            for (const [label, conc] of [['8 parallel', 8], ['8 parallel', 8], ['4 parallel', 4], ['2 parallel', 2], ['1 stream', 1], ['16 parallel', 16]]) {
+              const version = crypto.createHash('sha256').update(`updiag|${label}|${Math.random()}`).digest('hex');
+              const key = `updiag-${process.env.GITHUB_RUN_ID}-${conc}-${Math.random().toString(36).slice(2, 8)}`;
+              const c = await call('CreateCacheEntry', { key, version });
+              if (!c.ok) { core.info(`create failed ${JSON.stringify(c)}`); continue; }
+              const url = c.signed_upload_url, uuid = crypto.randomUUID();
+              const ids = files.map((_, i) => Buffer.from(uuid + String(i).padStart(12, '0')).toString('base64'));
+              const put = i => new Promise((res, rej) => {
+                const u = `${url}&comp=block&blockid=${encodeURIComponent(ids[i])}`;
+                require('child_process').execFile('curl', ['-sS', '-f', '-X', 'PUT', '-H', 'x-ms-blob-type: BlockBlob', '--data-binary', `@/tmp/b/${files[i]}`, '-o', '/dev/null', u], e => e ? rej(e) : res());
+              });
+              const t0 = Date.now();
+              await put(0);
+              let next = 1; const workers = Array.from({ length: conc }, async () => { while (next < files.length) { const i = next++; await put(i); } });
+              await Promise.all(workers);
+              const t1 = Date.now();
+              const xml = `<?xml version="1.0" encoding="utf-8"?><BlockList>${ids.map(i => `<Latest>${i}</Latest>`).join('')}</BlockList>`;
+              const r = await fetch(`${url}&comp=blocklist`, { method: 'PUT', body: xml });
+              const t2 = Date.now();
+              const f = await call('FinalizeCacheEntryUpload', { key, version, size_bytes: String(size) });
+              const t3 = Date.now();
+              core.info(`${label}: blocks ${(t1 - t0) / 1000}s (${(size / (t1 - t0) / 1000).toFixed(0)} MB/s), blocklist ${r.status} ${(t2 - t1) / 1000}s, finalize ok=${f.ok} ${(t3 - t2) / 1000}s`);
+            }
