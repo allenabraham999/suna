@@ -30,34 +30,54 @@ jobs:
           mkdir -p $RUNNER_TEMP/eslc
           cat > $RUNNER_TEMP/eslint-cache.cjs <<'PRE'
           'use strict';
-          // Preload (NODE_OPTIONS=--require): ESLint runs with its result cache on,
-          // in VULCAN_ESLINT_CACHE_DIR, unless the caller already chose a cache.
-          // ESLint keys each entry on the file's content and the config that applies
-          // to it, so a hit returns exactly what a fresh lint would.
+          // Preload (NODE_OPTIONS=--require): ESLint runs with its result cache on, in
+          // VULCAN_ESLINT_CACHE_DIR, unless the caller chose a cache itself. ESLint keys
+          // each entry on the file's content and the config that applies to it, but not
+          // on options such as --quiet (whose rule filter skips warning rules) or on the
+          // installed plugin versions: the cache FILE is therefore chosen by a hash of
+          // every result-affecting option, the cwd, and the nearest lockfile.
           const dir = process.env.VULCAN_ESLINT_CACHE_DIR;
           if (dir) {
             const Module = require('node:module');
             const path = require('node:path');
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
             const target = /[\\/]eslint[\\/]lib[\\/]eslint[\\/]eslint\.js$/;
+            const LOCKS = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb', 'npm-shrinkwrap.json'];
+            const lockHash = (cwd) => {
+              for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
+                for (const f of LOCKS) {
+                  try { return crypto.createHash('sha256').update(fs.readFileSync(path.join(d, f))).digest('hex'); } catch {}
+                }
+                if (path.dirname(d) === d) return 'nolock';
+              }
+            };
+            const keyOf = (o) => {
+              const h = crypto.createHash('sha256');
+              const cwd = o.cwd || process.cwd();
+              h.update(JSON.stringify(o, (k, v) => (k.startsWith('cache') ? undefined : typeof v === 'function' ? `fn:${v.toString()}` : v)));
+              h.update('\0' + path.resolve(cwd) + '\0' + lockHash(cwd) + '\0' + process.version);
+              return h.digest('hex').slice(0, 24);
+            };
             const load = Module._load;
             const done = new WeakSet();
             Module._load = function (request, parent, isMain) {
               const exp = load.apply(this, arguments);
               try {
-                if (exp && typeof exp.ESLint === 'function' && !done.has(exp)) {
-                  const file = Module._resolveFilename(request, parent, isMain);
-                  if (target.test(file)) {
-                    done.add(exp);
-                    const Base = exp.ESLint;
-                    exp.ESLint = class ESLint extends Base {
-                      constructor(options = {}) {
-                        if (!options.cache) {
-                          options = { ...options, cache: true, cacheStrategy: 'content', cacheLocation: dir.replace(/[\\/]*$/, path.sep) };
-                        }
-                        super(options);
+                if (exp && typeof exp.ESLint === 'function' && !done.has(exp)
+                    && target.test(Module._resolveFilename(request, parent, isMain))) {
+                  done.add(exp);
+                  const Base = exp.ESLint;
+                  exp.ESLint = class ESLint extends Base {
+                    constructor(options = {}) {
+                      if (!options.cache) {
+                        let loc = null;
+                        try { fs.mkdirSync(dir, { recursive: true }); loc = path.join(dir, `eslint-${keyOf(options)}.cache`); } catch {}
+                        if (loc) options = { ...options, cache: true, cacheStrategy: 'content', cacheLocation: loc };
                       }
-                    };
-                  }
+                      super(options);
+                    }
+                  };
                 }
               } catch { /* never in the way */ }
               return exp;
@@ -67,13 +87,14 @@ jobs:
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ${{ runner.temp }}/eslc
-          key: eslc-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}
-          restore-keys: eslc-${{ hashFiles('pnpm-lock.yaml') }}-
+          key: eslc2-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}
+          restore-keys: eslc2-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: eslint plain vs cached (same unmodified command)
         run: |
           ls -la $RUNNER_TEMP/eslc
           T() { local s=$EPOCHREALTIME; "$@"; local rc=$?; local e=$EPOCHREALTIME; awk -v n="$N" -v s="$s" -v e="$e" -v rc=$rc 'BEGIN{printf "RESULT %-12s %6.2f rc=%d\n", n, e-s, rc}'; }
           C=(env VULCAN_ESLINT_CACHE_DIR=$RUNNER_TEMP/eslc NODE_OPTIONS="--require $RUNNER_TEMP/eslint-cache.cjs")
+          N=cached-first T "${C[@]}" bash -c 'pnpm --dir apps/web exec eslint src --quiet > /tmp/o-cfirst 2>&1'
           N=plain T bash -c 'pnpm --dir apps/web exec eslint src --quiet > /tmp/o-plain 2>&1'
           N=cached T "${C[@]}" bash -c 'pnpm --dir apps/web exec eslint src --quiet > /tmp/o-cached 2>&1'
           N=cached2 T "${C[@]}" bash -c 'pnpm --dir apps/web exec eslint src --quiet > /tmp/o-cached2 2>&1'
@@ -83,6 +104,6 @@ jobs:
           N=nonquiet-c T "${C[@]}" bash -c 'pnpm --dir apps/web exec eslint src > /tmp/o-nq-c 2>&1'
           N=nonquiet-p T bash -c 'pnpm --dir apps/web exec eslint src > /tmp/o-nq-p 2>&1'
           git checkout -- apps/web/src
-          for p in "plain cached" "plain cached2" "plain3 cached3" "nq-p nq-c"; do set -- $p; cmp -s /tmp/o-$1 /tmp/o-$2 && echo "SAME $1 $2" || { echo "DIFF $1 $2"; diff /tmp/o-$1 /tmp/o-$2 | head -5; }; done
+          for p in "plain cfirst" "plain cached" "plain cached2" "plain3 cached3" "nq-p nq-c"; do set -- $p; cmp -s /tmp/o-$1 /tmp/o-$2 && echo "SAME $1 $2" || { echo "DIFF $1 $2"; diff /tmp/o-$1 /tmp/o-$2 | head -5; }; done
           tail -3 /tmp/o-nq-p
           ls -la $RUNNER_TEMP/eslc
