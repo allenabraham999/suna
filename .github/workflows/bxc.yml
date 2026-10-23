@@ -13,13 +13,13 @@ jobs:
     steps:
       - run: |
           R=/mnt/vulcan-sticky/docker
-          df -h /mnt/vulcan-sticky; sudo du -xsh $R/* 2>/dev/null
+          df -h /mnt/vulcan-sticky; sudo sh -c "du -xsh $R/*" || true
           orig=$(tr '\0' ' ' < /proc/$(pidof dockerd)/cmdline); echo "dockerd: $orig"
           cp /etc/docker/daemon.json /tmp/d.orig
           restart() { local pid; pid=$(pidof dockerd); sudo kill $pid; for _ in $(seq 300); do sudo kill -0 $pid 2>/dev/null || break; sleep 0.1; done; sudo sh -c "nohup $orig >>/var/log/dockerd.log 2>&1 &"; for _ in $(seq 120); do docker info >/dev/null 2>&1 && break; sleep 0.5; done; docker info --format 'driver={{.Driver}} images={{.Images}}'; }
           jq '.features["containerd-snapshotter"]=true' /tmp/d.orig > /tmp/d.json; sudo cp /tmp/d.json /etc/docker/daemon.json; restart
           docker system df; docker builder prune -af | tail -1; docker image prune -af | tail -1; docker system df
-          sudo du -xsh $R/containerd/daemon/* 2>/dev/null
+          sudo sh -c "du -xsh $R/containerd/daemon/*" || true
           sudo cp /tmp/d.orig /etc/docker/daemon.json; restart
           docker volume rm buildx_buildkit_bxkeep0_state || true
-          docker system df; df -h /mnt/vulcan-sticky; sudo du -xsh $R/* 2>/dev/null
+          docker system df; df -h /mnt/vulcan-sticky; sudo sh -c "du -xsh $R/*" || true
