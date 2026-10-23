@@ -1,21 +1,16 @@
 name: Queue probe
 on:
-  workflow_dispatch:
-    inputs:
-      matrix:
-        description: JSON list, one job per entry
-        default: '[1]'
-      label:
-        description: runs-on label
-        default: vulcan-4vcpu-ubuntu-2404
+  push:
+    branches: [bs/queue-1]
+    paths: ['.github/workflows/queue-probe.yml']
 permissions:
   contents: read
 jobs:
   probe:
     strategy:
       matrix:
-        i: ${{ fromJSON(inputs.matrix) }}
-    runs-on: ${{ inputs.label }}
+        i: [1]
+    runs-on: vulcan-4vcpu-ubuntu-2404
     steps:
       - name: timeline
         run: |
