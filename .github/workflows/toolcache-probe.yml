@@ -1,0 +1,42 @@
+name: toolcache-probe
+on:
+  workflow_dispatch:
+    inputs:
+      preseed:
+        description: stand-in for the image change (fill the tool cache / ~/.bun first)
+        type: boolean
+        default: false
+jobs:
+  probe:
+    runs-on: vulcan-2vcpu-ubuntu-2404
+    steps:
+      - name: Stand-in pre-seed
+        if: inputs.preseed
+        run: |
+          set -eux
+          TC=${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}
+          # Bun: newest release into ~/.bun/bin (where setup-bun looks) and the tool cache layout
+          B=$(curl -fsSL https://api.github.com/repos/oven-sh/bun/releases/latest -H "authorization: Bearer ${{ github.token }}" | jq -r .tag_name | sed 's/^bun-v//')
+          cd /tmp && curl -fsSL -o bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v$B/bun-linux-x64.zip" && unzip -q -o bun.zip
+          mkdir -p ~/.bun/bin "$TC/bun/$B/x64" && rm -f ~/.bun/bin/bun && cp bun-linux-x64/bun ~/.bun/bin/bun && cp bun-linux-x64/bun "$TC/bun/$B/x64/bun" && touch "$TC/bun/$B/x64.complete"
+          # Go: newest stable into the tool cache
+          G=$(curl -fsSL 'https://go.dev/dl/?mode=json' | jq -r '.[0].version' | sed 's/^go//')
+          mkdir -p "$TC/go/$G/x64" && curl -fsSL "https://dl.google.com/go/go$G.linux-amd64.tar.gz" | tar xz -C "$TC/go/$G/x64" --strip-components=1 && touch "$TC/go/$G/x64.complete"
+          # Node: newest release into the tool cache
+          N=$(curl -fsSL https://nodejs.org/dist/index.json | jq -r '.[0].version' | sed 's/^v//')
+          mkdir -p "$TC/node/$N/x64" && curl -fsSL "https://nodejs.org/dist/v$N/node-v$N-linux-x64.tar.xz" | tar xJ -C "$TC/node/$N/x64" --strip-components=1 && touch "$TC/node/$N/x64.complete"
+          ls "$TC"/*/
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: latest
+      - run: bun --version; go version; node --version; grep -o 'Git warm cache: .*' /dev/null || true
