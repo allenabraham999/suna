@@ -1,0 +1,48 @@
+name: cachediag
+on:
+  push:
+    branches: [bs/cachediag-1]
+jobs:
+  diag:
+    runs-on: vulcan-4vcpu-ubuntu-2404
+    steps:
+      - name: edge config
+        run: |
+          ps -eo pid,args | grep -iE "edge|vulcan" | grep -v grep | cut -c1-200 || true
+          sudo ls /etc/vulcan* /run/vulcan* 2>/dev/null | head -30 || true
+          sudo grep -rhoE "https?://[0-9.]+:[0-9]+[^ \"']*" /etc/vulcan* /etc/systemd/system/*edge* 2>/dev/null | sort -u | head || true
+      - name: get signed url
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const crypto = require('crypto');
+            const version = crypto.createHash('sha256').update(['synth', 'zstd-without-long', '1.0'].join('|')).digest('hex');
+            const base = process.env.ACTIONS_RESULTS_URL.replace(/\/+$/, '');
+            const r = await fetch(`${base}/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL`, {
+              method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.ACTIONS_RUNTIME_TOKEN}` },
+              body: JSON.stringify({ key: 'synth-v1-none', restore_keys: ['synth-v1-'], version }) });
+            const j = await r.json();
+            core.info(`ok=${j.ok} matched=${j.matched_key}`);
+            require('fs').writeFileSync('/tmp/u', j.signed_download_url);
+            core.info('host=' + new URL(j.signed_download_url).host);
+      - name: transfer tests
+        run: |
+          U=$(cat /tmp/u); H=$(echo "$U" | sed -E 's#^https?://([^/]+)/.*#\1#')
+          t(){ s=$(date +%s.%N); "$@"; e=$(date +%s.%N); awk "BEGIN{print $e-$s}"; }
+          SIZE=$(curl -sI "$U" | tr -d '\r' | awk 'tolower($1)=="content-length:"{print $2}'); echo size=$SIZE
+          for i in 1 2 3; do echo "edge single -> /dev/null: $(t curl -s -o /dev/null "$U")"; done
+          for i in 1 2; do echo "edge single -> file: $(t curl -s -o /tmp/f "$U")"; rm -f /tmp/f; done
+          par(){ n=$1; out=$2; step=$(( (SIZE + n - 1) / n )); pids=; for k in $(seq 0 $((n-1))); do a=$((k*step)); b=$((a+step-1)); [ $b -ge $SIZE ] && b=$((SIZE-1)); curl -s -r $a-$b -o $out.$k "$U" & pids="$pids $!"; done; wait $pids; }
+          for n in 2 4 8; do echo "edge ${n}x ranges -> /dev/null: $(t par $n /dev/null)"; done
+          for n in 4; do echo "edge ${n}x ranges -> files: $(t par $n /tmp/p)"; rm -f /tmp/p.*; done
+          V=$(sudo grep -rhoE "http://[0-9.]+:7470" /etc /run 2>/dev/null | head -1); echo vcache=$V
+          if [ -n "$V" ]; then D=$(echo "$U" | sed -E "s#^https?://[^/]+#$V#"); for i in 1 2 3; do echo "direct single -> /dev/null: $(t curl -s -o /dev/null "$D")"; done; fi
+          echo "node toolkit-like:"; cat > /tmp/dl.mjs <<'JS'
+          import http from 'node:http'; import fs from 'node:fs'; import { pipeline } from 'node:stream/promises';
+          const u = fs.readFileSync('/tmp/u','utf8'); const s = Date.now();
+          await new Promise((res, rej) => http.get(u, r => pipeline(r, fs.createWriteStream('/tmp/n')).then(res, rej)).on('error', rej));
+          console.log('node http.get -> file', (Date.now()-s)/1000);
+          JS
+          node /tmp/dl.mjs; rm -f /tmp/n
+          dd if=/dev/zero of=/tmp/z bs=4M count=350 status=none; s=$(date +%s.%N); cat /tmp/z > /dev/null; e=$(date +%s.%N); echo "page-cache read 1.4G: $(awk "BEGIN{print $e-$s}")"
+          s=$(date +%s.%N); dd if=/dev/zero of=/tmp/z2 bs=4M count=350 status=none; e=$(date +%s.%N); echo "write 1.4G no sync: $(awk "BEGIN{print $e-$s}")"; rm -f /tmp/z /tmp/z2
