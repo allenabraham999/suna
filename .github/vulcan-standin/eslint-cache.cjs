@@ -52,7 +52,9 @@
   const cp = require('child_process');
 
   const MAX_BYTES = 8 * 1024 * 1024;
-  const dir = env.VULCAN_ESLINT_CACHE_DIR || path.join(os.tmpdir(), 'vulcan-eslint-cache');
+  // Absolute: ESLint resolves its cache location against its cwd, and the
+  // patched LintResultCache recognises this file's caches by that path.
+  const dir = path.resolve(env.VULCAN_ESLINT_CACHE_DIR || path.join(os.tmpdir(), 'vulcan-eslint-cache'));
   const debug = env.VULCAN_ESLINT_CACHE_DEBUG === '1';
   const say = msg => { if (debug) { try { process.stderr.write(`vulcan eslint cache: ${msg}\n`); } catch (e) { /* closed */ } } };
   const sha = (...parts) => { const h = crypto.createHash('sha256'); for (const p of parts) h.update(String(p)).update('\0'); return h.digest('hex'); };
@@ -146,7 +148,9 @@
 
   // The rule lists the route files under pages/ and app/ of each Next.js root
   // directory (names only): fingerprint that listing.
+  let otherCwd = false;   // an ESLint was given a cwd of its own: the rule's root is not known here
   function routeListing(config, ruleOptions) {
+    if (otherCwd) throw new Error('ESLint cwd differs from the process cwd');
     const cwd = process.cwd();
     const custom = Array.isArray(ruleOptions) ? ruleOptions[1] : undefined;
     const rootDir = config && config.settings && config.settings.next && config.settings.next.rootDir;
@@ -337,12 +341,14 @@
 
   /** The options to construct ESLint with, plus this file's state; null to leave ESLint alone. */
   function plan(options, file) {
+    if (options === undefined) options = {};
     if (!options || typeof options !== 'object') return null;
     // The caller's own cache: hands off. (The CLI always passes cacheLocation,
     // .eslintcache by default, so only `cache` says the caller chose one.)
     if (options.cache) return null;
     if (options.concurrency !== undefined && options.concurrency !== 'off') { say('multithread linting; cache off'); return null; }
     if (!patchedRoots.has(pkgRoot(file))) { say('ESLint result cache not recognised; cache off'); return null; }
+    if (options.cwd && path.resolve(options.cwd) !== process.cwd()) otherCwd = true;
     fs.mkdirSync(dir, { recursive: true });
     const key = keyOf(options, eslintVersionOf(file));
     const loc = path.join(dir, `eslint-${key}.json`);

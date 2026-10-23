@@ -135,3 +135,4 @@ describe('agent discovery documents', () => {
     expect(robots).toContain('Allow: /mcp');
   });
 });
+// bs: touched to measure a one-file change
