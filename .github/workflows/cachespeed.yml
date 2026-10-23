@@ -40,8 +40,8 @@ jobs:
           cd $GITHUB_WORKSPACE
           ls synth > /tmp/m.txt; sed -i 's#^#synth/#' /tmp/m.txt
           s=$(date +%s.%N); tar --posix -cf /tmp/x.tzst -P --files-from /tmp/m.txt --use-compress-program zstdmt; e=$(date +%s.%N)
-          ls -l /tmp/x.tzst; echo "compress_s=$(echo "$e-$s"|bc)"
+          ls -l /tmp/x.tzst; echo "compress_s=$(awk "BEGIN{print $e-$s}")"
           mkdir -p /tmp/xx; s=$(date +%s.%N); tar -xf /tmp/x.tzst -P -C /tmp/xx --use-compress-program unzstd; e=$(date +%s.%N)
-          echo "decompress_s=$(echo "$e-$s"|bc)"
-          s=$(date +%s.%N); cat /tmp/x.tzst > /dev/null; dd if=/tmp/x.tzst of=/tmp/y bs=4M status=none; sync; e=$(date +%s.%N); echo "copy_s=$(echo "$e-$s"|bc)"
+          echo "decompress_s=$(awk "BEGIN{print $e-$s}")"
+          s=$(date +%s.%N); cat /tmp/x.tzst > /dev/null; dd if=/tmp/x.tzst of=/tmp/y bs=4M status=none; sync; e=$(date +%s.%N); echo "copy_s=$(awk "BEGIN{print $e-$s}")"
           rm -rf /tmp/xx /tmp/x.tzst /tmp/y
