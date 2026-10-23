@@ -1,0 +1,39 @@
+name: BXP
+# The common pattern, as-is: setup-buildx-action (docker-container builder) +
+# build-push-action with load: true and a registry cache. On -shim branches the
+# first step stands in for a runner-image change (a docker-buildx CLI plugin shim).
+on:
+  push:
+    branches: ['bs/buildxp-*']
+    paths: ['.bxp-tick']
+permissions:
+  contents: read
+jobs:
+  image:
+    runs-on: ${{ vars.CI_RUNNER_M || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: stand-in image change
+        if: ${{ endsWith(github.ref_name, '-shim') }}
+        run: |
+          install -d ~/.docker/cli-plugins
+          install -m 0755 .bx/docker-buildx ~/.docker/cli-plugins/docker-buildx
+          sudo install -d -m 0711 /mnt/vulcan-sticky/docker/vulcan-buildkit
+          echo VULCAN_STICKY_BUILDKIT=/mnt/vulcan-sticky/docker/vulcan-buildkit >> "$GITHUB_ENV"
+          sudo du -sh /mnt/vulcan-sticky/docker/vulcan-buildkit; sudo ls /mnt/vulcan-sticky/docker/vulcan-buildkit
+          docker volume ls; df -h /mnt/vulcan-sticky
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          build-args: SERVICE=apps/api
+          load: true
+          tags: kortix/kortix-api:selfhost-local
+          cache-from: type=registry,ref=kortix/kortix-api:dev-buildcache
+      - name: Use the image
+        run: docker image inspect kortix/kortix-api:selfhost-local --format '{{.Id}} {{.Size}}' && docker run --rm --entrypoint sh kortix/kortix-api:selfhost-local -c 'echo ran'
