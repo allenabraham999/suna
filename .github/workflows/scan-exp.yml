@@ -1,0 +1,49 @@
+name: scan-exp
+on:
+  push:
+    branches: ['bs/scan-*']
+permissions:
+  contents: read
+jobs:
+  exp:
+    strategy:
+      matrix:
+        label: [vulcan-2vcpu-ubuntu-2404, vulcan-4vcpu-ubuntu-2404]
+    runs-on: ${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: info
+        run: |
+          nproc; free -m; df -h / /tmp | cat
+          cat /etc/docker/daemon.json || true
+          env | grep -i trivy || true
+          git ls-files | wc -l; du -sh --exclude=.git . ; du -sh .git
+      - uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514
+        with: { version: v0.70.0, cache: true }
+      - name: db from default (mirror.gcr.io)
+        run: |
+          s=$(date +%s.%N); trivy fs --download-db-only --cache-dir /tmp/c1 --no-progress 2>&1 | tail -5; e=$(date +%s.%N); echo "DEFAULT_DB $(echo "$e-$s"|bc)"
+      - name: db from local mirror
+        run: |
+          M=$(jq -r '."registry-mirrors"[0]' /etc/docker/daemon.json | sed 's#https://##'); echo "mirror=$M"
+          s=$(date +%s.%N); trivy fs --download-db-only --cache-dir /tmp/c2 --db-repository "$M/aquasec/trivy-db:2,mirror.gcr.io/aquasec/trivy-db:2" --no-progress 2>&1 | tail -5; e=$(date +%s.%N); echo "MIRROR_DB $(echo "$e-$s"|bc)"
+          s=$(date +%s.%N); trivy fs --download-db-only --cache-dir /tmp/c3 --db-repository "$M/aquasec/trivy-db:2" --no-progress 2>&1 | tail -2; e=$(date +%s.%N); echo "MIRROR_DB2 $(echo "$e-$s"|bc)"
+          ls -la /tmp/c2/db; du -sh /tmp/c2
+      - name: raw blob + gunzip
+        run: |
+          M=$(jq -r '."registry-mirrors"[0]' /etc/docker/daemon.json)
+          D=$(curl -s -H 'Accept: application/vnd.oci.image.manifest.v1+json' $M/v2/aquasec/trivy-db/manifests/2 | jq -r '.layers[0].digest')
+          curl -sL -o /tmp/db.tgz -w "BLOB %{size_download} %{time_total}s\n" $M/v2/aquasec/trivy-db/blobs/$D
+          mkdir -p /tmp/x; s=$(date +%s.%N); tar -xzf /tmp/db.tgz -C /tmp/x; e=$(date +%s.%N); echo "GUNZIP $(echo "$e-$s"|bc)"
+      - name: scans
+        run: |
+          t(){ local n=$1; shift; s=$(date +%s.%N); trivy fs . --cache-dir /tmp/c2 --skip-db-update --skip-version-check --severity CRITICAL --ignore-unfixed --format table -q "$@" >/dev/null 2>&1; e=$(date +%s.%N); echo "SCAN $n $(echo "$e-$s"|bc)"; }
+          t both --scanners vuln,secret
+          t both2 --scanners vuln,secret
+          t vuln --scanners vuln
+          t secret --scanners secret
+          t both-p0 --scanners vuln,secret --parallel 0
+          t both-p16 --scanners vuln,secret --parallel 16
+          t both-p1 --scanners vuln,secret --parallel 1
+      - name: debug scan
+        run: trivy fs . --cache-dir /tmp/c2 --skip-db-update --skip-version-check --severity CRITICAL --scanners vuln,secret --debug 2>&1 | grep -v -E 'Walk|Skipping' | cut -c1-200 | tail -60 || true
