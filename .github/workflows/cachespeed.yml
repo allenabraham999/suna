@@ -1,0 +1,47 @@
+name: cachespeed
+on:
+  push:
+    branches: [bs/cachespeed-1]
+  workflow_dispatch:
+    inputs:
+      mb:
+        description: uncompressed MB to cache
+        default: '1600'
+jobs:
+  roundtrip:
+    runs-on: vulcan-4vcpu-ubuntu-2404
+    steps:
+      - name: env
+        run: |
+          nproc; free -g; df -h $GITHUB_WORKSPACE | tail -1
+          echo "ACTIONS_RESULTS_URL=${ACTIONS_RESULTS_URL:-}" | sed -E 's#(https?://[^/]+).*#\1#'
+          zstd --version
+      - name: Restore synthetic cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: synth
+          key: synth-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: synth-v1-
+      - name: restored size
+        run: du -sh synth 2>/dev/null || echo none
+      - name: generate
+        run: |
+          MB=${{ github.event.inputs.mb || '1600' }}
+          rm -rf synth; mkdir -p synth
+          # Half incompressible, half text-like (base64), in 4 MB files, like a bundler cache.
+          n=$((MB/4)); seed=$RANDOM
+          for i in $(seq 1 $n); do
+            if [ $((i%2)) = 0 ]; then head -c 4194304 /dev/urandom > synth/r$i.bin
+            else head -c 3145728 /dev/urandom | base64 -w 120 > synth/t$i.txt; fi
+          done
+          du -sh synth
+      - name: local tar+zstd timing (no network)
+        run: |
+          cd $GITHUB_WORKSPACE
+          ls synth > /tmp/m.txt; sed -i 's#^#synth/#' /tmp/m.txt
+          s=$(date +%s.%N); tar --posix -cf /tmp/x.tzst -P --files-from /tmp/m.txt --use-compress-program zstdmt; e=$(date +%s.%N)
+          ls -l /tmp/x.tzst; echo "compress_s=$(echo "$e-$s"|bc)"
+          mkdir -p /tmp/xx; s=$(date +%s.%N); tar -xf /tmp/x.tzst -P -C /tmp/xx --use-compress-program unzstd; e=$(date +%s.%N)
+          echo "decompress_s=$(echo "$e-$s"|bc)"
+          s=$(date +%s.%N); cat /tmp/x.tzst > /dev/null; dd if=/tmp/x.tzst of=/tmp/y bs=4M status=none; sync; e=$(date +%s.%N); echo "copy_s=$(echo "$e-$s"|bc)"
+          rm -rf /tmp/xx /tmp/x.tzst /tmp/y
