@@ -16,7 +16,7 @@ jobs:
       - name: stand-in image store
         if: ${{ !endsWith(github.ref_name, '-none') }}
         env:
-          STORE: ${{ endsWith(github.ref_name, '-cd') && 'containerd' || 'classic' }}
+          STORE: ${{ contains(github.ref_name, '-cd') && 'containerd' || 'classic' }}
         run: |
           df -h /mnt/vulcan-sticky 2>/dev/null || true
           sudo ls /mnt/vulcan-sticky/docker 2>/dev/null || true
@@ -68,22 +68,46 @@ jobs:
         env:
           API_IMAGE: kortix/kortix-api:selfhost-local
 
-      - name: extra container-builder load
-        if: ${{ !endsWith(github.ref_name, '-none') }}
+      - name: extra store A/B
+        if: ${{ endsWith(github.ref_name, 'x') }}
         run: |
-          docker buildx ls
-          b=$(docker buildx ls --format '{{.Name}}' | grep '^builder-' | head -1)
-          echo "builder=$b"
-          t0=$(date +%s)
-          docker buildx build --builder "$b" --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t bx/api:container . 2>&1 | grep -E '^#[0-9]+ (exporting|sending|importing|unpacking|naming|writing|DONE [0-9]{2,})|ERROR' | tail -20
-          echo "container-builder build+load: $(( $(date +%s) - t0 ))s"
-          # Same with a kept-state builder (what a persistent builder would give on its second use)
-          docker rm -f buildx_buildkit_bxkeep0 >/dev/null 2>&1 || true
-          docker buildx create --name bxkeep --driver docker-container --buildkitd-config $HOME/.docker/buildx/buildkitd.default.toml
-          docker volume ls | grep bxkeep || true
-          t0=$(date +%s)
-          docker buildx build --builder bxkeep --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t bx/api:keep . 2>&1 | grep -E '^#[0-9]+ (exporting|sending|importing|unpacking|naming|writing|DONE [0-9]{2,})|ERROR' | tail -20
-          echo "kept-state builder build+load: $(( $(date +%s) - t0 ))s"
-          docker buildx stop bxkeep || true
-          docker system df || true
-          df -h /mnt/vulcan-sticky || true
+          set -u
+          B="docker build --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile"
+          BX="docker buildx build --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile"
+          orig=$(tr '\0' ' ' < /proc/$(pidof dockerd)/cmdline)
+          cp /etc/docker/daemon.json /tmp/daemon.orig.json
+          restart() { # $1 data root, $2 containerd-snapshotter true|false
+            local pid; pid=$(pidof dockerd)
+            jq --argjson v $2 '.features["containerd-snapshotter"]=$v' /tmp/daemon.orig.json > /tmp/d.json; sudo cp /tmp/d.json /etc/docker/daemon.json
+            sudo kill $pid; for _ in $(seq 200); do sudo kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+            sudo sh -c "nohup dockerd --data-root $1 >>/var/log/dockerd.log 2>&1 &"
+            for _ in $(seq 120); do docker info >/dev/null 2>&1 && break; sleep 0.5; done
+            docker info --format "dockerd up: root={{.DockerRootDir}} driver={{.Driver}}"
+          }
+          t() { local t0=$(date +%s.%N); "$@" > /tmp/out.log 2>&1; local rc=$?; printf '%-28s %6.1fs rc=%s\n' "$LABEL" "$(echo "$(date +%s.%N) - $t0" | bc)" $rc; grep -E '(unpacking|sending tarball|importing to docker|exporting layers|writing image).* done|^#[0-9]+ DONE' /tmp/out.log | grep -E 'unpacking|tarball|exporting layers|writing image' | sed 's/^/    /'; }
+          for store in false true; do
+            root=/mnt/vulcan-sticky/bx-$store; sudo rm -rf $root
+            echo "=== containerd-snapshotter=$store"
+            restart $root $store
+            LABEL="docker build cold" t $B -t bx/api:a .
+            restart $root $store
+            LABEL="docker build warm" t $B -t bx/api:a .
+            LABEL="docker build warm newtag" t $B -t bx/api:b .
+            docker buildx create --name bxc --driver docker-container --buildkitd-config $HOME/.docker/buildx/buildkitd.default.toml >/dev/null
+            LABEL="bootstrap fresh builder" t docker buildx inspect --bootstrap bxc
+            LABEL="container cold state" t $BX --builder bxc -t bx/api:c .
+            docker rm -f buildx_buildkit_bxc0 >/dev/null; docker buildx rm --keep-state bxc >/dev/null 2>&1 || true
+            restart $root $store
+            docker buildx create --name bxc --driver docker-container --buildkitd-config $HOME/.docker/buildx/buildkitd.default.toml >/dev/null
+            LABEL="bootstrap kept-state builder" t docker buildx inspect --bootstrap bxc
+            LABEL="container kept state" t $BX --builder bxc -t bx/api:d .
+            LABEL="container kept, no load" t docker buildx build --builder bxc --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile .
+            sudo du -sh $root 2>/dev/null | tail -1
+            docker buildx rm bxc >/dev/null 2>&1 || true
+          done
+          restart /mnt/vulcan-sticky/docker false >/dev/null
+          sudo cp /tmp/daemon.orig.json /etc/docker/daemon.json
+          pid=$(pidof dockerd); sudo kill $pid; for _ in $(seq 200); do sudo kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+          sudo sh -c "nohup $orig >>/var/log/dockerd.log 2>&1 &"; for _ in $(seq 120); do docker info >/dev/null 2>&1 && break; sleep 0.5; done
+          sudo rm -rf /mnt/vulcan-sticky/bx-false /mnt/vulcan-sticky/bx-true
+          docker info --format "restored: root={{.DockerRootDir}} driver={{.Driver}}"; df -h /mnt/vulcan-sticky
