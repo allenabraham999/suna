@@ -14,28 +14,13 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        copy: [default, noverify, preread]
+        copy: [1, 2, 3]
     runs-on: vulcan-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       # Stand-in for a warm template: what prebake.sh does at template build
       # (pnpm fetch from the lockfile alone into /opt/vulcan/warm/pnpm-store),
       # then caches dropped. Not counted in the job's time.
-      - name: DIAG warm store
-        run: |
-          S=/opt/vulcan/warm/pnpm-store/v3
-          du -sh $S; ls $S
-          idx=$(find $S/files/00 -name '*-index.json' | head -1); echo "index $idx"; stat -c 'index mtime %y' "$idx"
-          python3 - "$idx" "$S" <<'PY'
-          import json,sys,os,datetime
-          d=json.load(open(sys.argv[1])); S=sys.argv[2]
-          for name,f in list(d.get('files',{}).items())[:3]:
-            h=f['integrity'].split('-',1)[1]
-            import base64; hx=base64.b64decode(h).hex()
-            p=os.path.join(S,'files',hx[:2],hx[2:]+('-exec' if f.get('mode',0)&0o111 else ''))
-            m=os.stat(p).st_mtime*1000 if os.path.exists(p) else None
-            print(name,'checkedAt',f.get('checkedAt'),'mtime_ms',m, 'mtime>checkedAt' if m and f.get('checkedAt') and m>f['checkedAt'] else 'ok')
-          PY
       - name: SEED prebake stand-in
         if: inputs.variant == 'seed'
         run: |
@@ -69,10 +54,7 @@ jobs:
           corepack enable pnpm
           echo "pnpm: $(pnpm -v)  node: $(node -v)  bun: $(bun -v)"
       - name: Install dependencies (CLI + workspace deps)
-        run: |
-          if [ "${{ matrix.copy }}" = preread ]; then t0=$(date +%s.%N); tar -cf - /opt/vulcan/warm/pnpm-store 2>/dev/null | cat > /dev/null; echo "preread $(echo "$(date +%s.%N) - $t0" | bc) s"; fi
-          extra=; [ "${{ matrix.copy }}" = noverify ] && extra="--config.verify-store-integrity=false"
-          /usr/bin/time -v pnpm install --frozen-lockfile --filter "@kortix/cli..." $extra --reporter=append-only --loglevel=info > /tmp/i.log 2>&1; rc=$?; grep -E "Elapsed|User time|System time|Percent of CPU|File system inputs|Major" /tmp/i.log; grep Progress /tmp/i.log | tail -1; grep -v -E "^(Progress|\.)" /tmp/i.log | tail -15; exit $rc
+        run: pnpm install --frozen-lockfile --filter "@kortix/cli..." --reporter=append-only > /tmp/i.log 2>&1; rc=$?; grep Progress /tmp/i.log | tail -1; tail -2 /tmp/i.log; exit $rc
         env:
           npm_config_engine_strict: "false"
       - name: Build Linux CLI binary
@@ -87,7 +69,8 @@ jobs:
         run: /tmp/kortix-cli-smoke version
 
   desktop:
-    if: false
+    needs: cli
+    if: always()
     name: Desktop installer smoke ${{ inputs.variant }} ${{ matrix.copy }}
     strategy:
       fail-fast: false
@@ -127,7 +110,7 @@ jobs:
         with:
           bun-version: latest
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel
+        run: pnpm install --frozen-lockfile --filter @kortix/desktop-electron --filter @kortix/agent-tunnel --reporter=append-only > /tmp/i.log 2>&1; rc=$?; grep Progress /tmp/i.log | tail -1; tail -2 /tmp/i.log; exit $rc
         env:
           npm_config_engine_strict: "false"
       - name: Ensure Electron runtime
