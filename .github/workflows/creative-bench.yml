@@ -107,3 +107,4 @@ jobs:
           for p in "plain cfirst" "plain cached" "plain cached2" "plain3 cached3" "nq-p nq-c"; do set -- $p; cmp -s /tmp/o-$1 /tmp/o-$2 && echo "SAME $1 $2" || { echo "DIFF $1 $2"; diff /tmp/o-$1 /tmp/o-$2 | head -5; }; done
           tail -3 /tmp/o-nq-p
           ls -la $RUNNER_TEMP/eslc
+# nonce 1792739023926036000
