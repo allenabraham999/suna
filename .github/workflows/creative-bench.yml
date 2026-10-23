@@ -25,31 +25,64 @@ jobs:
         run: pnpm install --frozen-lockfile --filter "./apps/web..."
         env:
           npm_config_engine_strict: "false"
-      - name: eslint variants
+      - name: preload (stand-in for the image)
         run: |
-          cd apps/web
-          THP=/sys/kernel/mm/transparent_hugepage/enabled
-          THP0=$(sed -n 's/.*\[\(.*\)\].*/\1/p' $THP)
-          export NCC=$RUNNER_TEMP/ncc
-          thp() { echo "$1" | sudo tee $THP >/dev/null; }
-          steal() { awk '/^cpu /{print $9}' /proc/stat; }
-          run() { # name, thp mode, env assignments...
-            local name=$1 mode=$2; shift 2
-            thp "$mode"
-            local st0=$(steal) s=$EPOCHREALTIME
-            local TIMEFORMAT='%U %S'
-            local cpu
-            cpu=$( { time env "$@" pnpm exec eslint src --quiet >/dev/null 2>&1; } 2>&1 | tail -1 )
-            local e=$EPOCHREALTIME st1=$(steal)
-            thp "$THP0"
-            awk -v n="$name" -v s="$s" -v e="$e" -v c="$cpu" -v st=$((st1-st0)) 'BEGIN{split(c,a," "); printf "RESULT %-10s wall %6.2f cpu %6.2f steal %5.2f\n", n, e-s, a[1]+a[2], st/100}'
+          mkdir -p $RUNNER_TEMP/eslc
+          cat > $RUNNER_TEMP/eslint-cache.cjs <<'PRE'
+          'use strict';
+          // Preload (NODE_OPTIONS=--require): ESLint runs with its result cache on,
+          // in VULCAN_ESLINT_CACHE_DIR, unless the caller already chose a cache.
+          // ESLint keys each entry on the file's content and the config that applies
+          // to it, so a hit returns exactly what a fresh lint would.
+          const dir = process.env.VULCAN_ESLINT_CACHE_DIR;
+          if (dir) {
+            const Module = require('node:module');
+            const path = require('node:path');
+            const target = /[\\/]eslint[\\/]lib[\\/]eslint[\\/]eslint\.js$/;
+            const load = Module._load;
+            const done = new WeakSet();
+            Module._load = function (request, parent, isMain) {
+              const exp = load.apply(this, arguments);
+              try {
+                if (exp && typeof exp.ESLint === 'function' && !done.has(exp)) {
+                  const file = Module._resolveFilename(request, parent, isMain);
+                  if (target.test(file)) {
+                    done.add(exp);
+                    const Base = exp.ESLint;
+                    exp.ESLint = class ESLint extends Base {
+                      constructor(options = {}) {
+                        if (!options.cache) {
+                          options = { ...options, cache: true, cacheStrategy: 'content', cacheLocation: dir.replace(/[\\/]*$/, path.sep) };
+                        }
+                        super(options);
+                      }
+                    };
+                  }
+                }
+              } catch { /* never in the way */ }
+              return exp;
+            };
           }
-          run nccprime "$THP0" NODE_COMPILE_CACHE=$NCC
-          for round in 1 2 3 4; do
-            run plain "$THP0" X=1
-            run thp always X=1
-            run semi64 "$THP0" NODE_OPTIONS=--max-semi-space-size=64
-            run thpsemi always NODE_OPTIONS=--max-semi-space-size=64
-            run ncc "$THP0" NODE_COMPILE_CACHE=$NCC
-          done
-          grep -E "AnonHugePages" /proc/meminfo
+          PRE
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/eslc
+          key: eslc-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}
+          restore-keys: eslc-${{ hashFiles('pnpm-lock.yaml') }}-
+      - name: eslint plain vs cached (same unmodified command)
+        run: |
+          ls -la $RUNNER_TEMP/eslc
+          T() { local s=$EPOCHREALTIME; "$@"; local rc=$?; local e=$EPOCHREALTIME; awk -v n="$N" -v s="$s" -v e="$e" -v rc=$rc 'BEGIN{printf "RESULT %-12s %6.2f rc=%d\n", n, e-s, rc}'; }
+          C=(env VULCAN_ESLINT_CACHE_DIR=$RUNNER_TEMP/eslc NODE_OPTIONS="--require $RUNNER_TEMP/eslint-cache.cjs")
+          N=plain T bash -c 'pnpm --dir apps/web exec eslint src --quiet > /tmp/o-plain 2>&1'
+          N=cached T "${C[@]}" bash -c 'pnpm --dir apps/web exec eslint src --quiet > /tmp/o-cached 2>&1'
+          N=cached2 T "${C[@]}" bash -c 'pnpm --dir apps/web exec eslint src --quiet > /tmp/o-cached2 2>&1'
+          for f in $(git ls-files apps/web/src | grep -E "\.tsx$" | shuf -n 10 --random-source=<(yes)); do echo "// pr edit" >> $f; done
+          N=cached10chg T "${C[@]}" bash -c 'pnpm --dir apps/web exec eslint src --quiet > /tmp/o-cached3 2>&1'
+          N=plain10chg T bash -c 'pnpm --dir apps/web exec eslint src --quiet > /tmp/o-plain3 2>&1'
+          N=nonquiet-c T "${C[@]}" bash -c 'pnpm --dir apps/web exec eslint src > /tmp/o-nq-c 2>&1'
+          N=nonquiet-p T bash -c 'pnpm --dir apps/web exec eslint src > /tmp/o-nq-p 2>&1'
+          git checkout -- apps/web/src
+          for p in "plain cached" "plain cached2" "plain3 cached3" "nq-p nq-c"; do set -- $p; cmp -s /tmp/o-$1 /tmp/o-$2 && echo "SAME $1 $2" || { echo "DIFF $1 $2"; diff /tmp/o-$1 /tmp/o-$2 | head -5; }; done
+          tail -3 /tmp/o-nq-p
+          ls -la $RUNNER_TEMP/eslc
