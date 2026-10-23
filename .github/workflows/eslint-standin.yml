@@ -1,0 +1,117 @@
+name: BS eslint cache
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: on | off
+        default: "on"
+permissions:
+  contents: read
+jobs:
+  frontend-build:
+    name: Frontend build
+    runs-on: ${{ vars.CI_RUNNER_L || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    steps:
+      # Stand-in for a listed repository (VULCAN_ESLINT_CACHE_REPOS): the
+      # image's preload in NODE_OPTIONS and the edge's /eslint/v1. The
+      # edge+vcache store is stood in for by a loopback file server whose
+      # directory the Actions cache (Vulcan's own) carries between jobs.
+      - name: STANDIN eslint result store
+        if: inputs.variant != 'off'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /var/tmp/eslint-standin
+          key: eslint-standin-${{ github.run_id }}
+          restore-keys: eslint-standin-
+
+      - name: STANDIN eslint cache wiring
+        if: inputs.variant != 'off'
+        run: |
+          base=https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/.github/vulcan-standin
+          sudo install -d /opt/vulcan
+          sudo curl -fsSL "$base/eslint-cache.cjs" -o /opt/vulcan/eslint-cache.cjs
+          curl -fsSL "$base/edge.cjs" -o /var/tmp/standin-edge.cjs
+          mkdir -p /var/tmp/eslint-standin; ls -la /var/tmp/eslint-standin
+          NODE=$(command -v node || ls -d "$HOME"/actions-runner/externals/node2*/bin/node | tail -1)
+          nohup "$NODE" /var/tmp/standin-edge.cjs /var/tmp/eslint-standin 7481 > /var/tmp/standin-edge.log 2>&1 &
+          for i in $(seq 50); do curl -fs http://127.0.0.1:7481/health && break; sleep 0.1; done
+          { echo "NODE_OPTIONS=--require /opt/vulcan/eslint-cache.cjs"; echo "VULCAN_ESLINT_CACHE=safe"
+            echo "VULCAN_ESLINT_CACHE_URL=http://127.0.0.1:7481/eslint/v1"; echo "VULCAN_ESLINT_CACHE_DEBUG=1"; } >> "$GITHUB_ENV"
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install pnpm
+        run: |
+          corepack enable pnpm
+          echo "pnpm: $(pnpm -v)  node: $(node -v)"
+
+      - name: Install dependencies (frontend + workspace deps)
+        run: pnpm install --frozen-lockfile --filter "./apps/web..."
+        env:
+          npm_config_engine_strict: "false"
+
+      # src/sdk-boundary.test.ts runs in the `packages-rest` contract lane
+      # (apps/web `bun test`); only the lint is unique to this job.
+      - name: Enforce frontend lint
+        run: pnpm --dir apps/web exec eslint src --quiet
+
+      - name: Lint translations
+        run: pnpm --dir apps/web run lint:i18n
+
+      # Next.js 16.3 turns on Turbopack's FileSystem cache for `next build`
+      # (`experimental.turbopackFileSystemCacheForBuild`, default true) and
+      # writes it to apps/web/.next/cache/turbopack. A bare runner starts with
+      # no .next, so without this step 16.3 pays the cost of WRITING that cache
+      # on every run and never reads it back. Restoring it is what turns the
+      # 16.3 build-cache feature into an actual CI speedup.
+      #
+      # Key on the lockfile plus this run's SHA so every run saves a fresh
+      # entry (actions/cache never overwrites an existing key); the restore-key
+      # falls back to the newest entry built against the same dependency set.
+      # Turbopack invalidates per-file from its own content hashes, so a
+      # restored cache from an older SHA is a valid starting point, not a
+      # source of stale output.
+      #
+      # The fallback deliberately stops at the lockfile hash. A broader
+      # `nextjs-turbopack-<os>-` key would also match caches built against a
+      # DIFFERENT next version, whose on-disk cache format need not be
+      # compatible — that is ~1GB downloaded to be discarded. Upstream's recipe
+      # scopes its restore-keys to the lockfile for the same reason:
+      # https://nextjs.org/docs/app/guides/ci-build-caching
+      #
+      # Verified on this PR: run 1 logged "Cache not found" then "Cache saved";
+      # a re-run logged "Cache restored from key" and the Turbopack compile
+      # went 105s -> 1.549s.
+      - name: Restore Turbopack build cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: apps/web/.next/cache
+          key: nextjs-turbopack-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            nextjs-turbopack-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+
+      - name: Build standalone frontend
+        run: pnpm --filter ./apps/web build
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+          NEXT_PUBLIC_BACKEND_URL: http://localhost:8008/v1
+          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: local-build-placeholder-anon-key
+          NEXT_PUBLIC_BILLING_ENABLED: "false"
+          NEXT_OUTPUT: standalone
+
+      - name: STANDIN store log
+        if: always() && inputs.variant != 'off'
+        run: cat /var/tmp/standin-edge.log || true; ls -la /var/tmp/eslint-standin || true
+
