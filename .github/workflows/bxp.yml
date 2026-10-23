@@ -24,7 +24,11 @@ jobs:
           echo VULCAN_STICKY_BUILDKIT=/mnt/vulcan-sticky/docker/vulcan-buildkit >> "$GITHUB_ENV"
           sudo du -sh /mnt/vulcan-sticky/docker/vulcan-buildkit; sudo ls /mnt/vulcan-sticky/docker/vulcan-buildkit
           docker volume ls; df -h /mnt/vulcan-sticky
-          sudo du -xh --max-depth=4 /mnt/vulcan-sticky/docker 2>/dev/null | sort -h | tail -15
+          docker info --format '{{range .ClientInfo.Plugins}}{{.Name}} {{.Path}}{{"\n"}}{{end}}'
+          n=builder-00000000-0000-0000-0000-000000000000
+          bash -x ~/.docker/cli-plugins/docker-buildx buildx create --name $n --driver docker-container 2>&1 | tail -40
+          docker volume ls; docker volume inspect buildx_buildkit_${n}0_state || true
+          docker buildx rm $n || true; docker volume ls
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build API image
