@@ -1,17 +1,16 @@
 name: toolcache-probe
 on:
-  workflow_dispatch:
-    inputs:
-      preseed:
-        description: stand-in for the image change (fill the tool cache / ~/.bun first)
-        type: boolean
-        default: false
+  push:
+    branches: [bs/toolcache-1]
 jobs:
   probe:
     runs-on: vulcan-2vcpu-ubuntu-2404
+    strategy:
+      matrix:
+        preseed: [false, true]
     steps:
       - name: Stand-in pre-seed
-        if: inputs.preseed
+        if: matrix.preseed
         run: |
           set -eux
           TC=${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}
