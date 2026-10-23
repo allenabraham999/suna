@@ -25,6 +25,18 @@ jobs:
           key: eslint-standin-${{ github.run_id }}
           restore-keys: eslint-standin-
 
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # The runner reads NODE_OPTIONS from its .env at start (what the image
+      # does); a step cannot set it ($GITHUB_ENV refuses NODE_OPTIONS), so the
+      # stand-in puts a `node` ahead on PATH that starts the real one with the
+      # same --require.
       - name: STANDIN eslint cache wiring
         if: inputs.variant != 'off'
         run: |
@@ -33,18 +45,14 @@ jobs:
           sudo curl -fsSL "$base/eslint-cache.cjs" -o /opt/vulcan/eslint-cache.cjs
           curl -fsSL "$base/edge.cjs" -o /var/tmp/standin-edge.cjs
           mkdir -p /var/tmp/eslint-standin; ls -la /var/tmp/eslint-standin
-          NODE=$(command -v node || ls -d "$HOME"/actions-runner/externals/node2*/bin/node | tail -1)
-          nohup "$NODE" /var/tmp/standin-edge.cjs /var/tmp/eslint-standin 7481 > /var/tmp/standin-edge.log 2>&1 &
+          REAL=$(command -v node)
+          nohup "$REAL" /var/tmp/standin-edge.cjs /var/tmp/eslint-standin 7481 > /var/tmp/standin-edge.log 2>&1 &
           for i in $(seq 50); do curl -fs http://127.0.0.1:7481/health && break; sleep 0.1; done
-          { echo "NODE_OPTIONS=--require /opt/vulcan/eslint-cache.cjs"; echo "VULCAN_ESLINT_CACHE=safe"
-            echo "VULCAN_ESLINT_CACHE_URL=http://127.0.0.1:7481/eslint/v1"; echo "VULCAN_ESLINT_CACHE_DEBUG=1"; } >> "$GITHUB_ENV"
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Install Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
+          mkdir -p /var/tmp/standin-bin
+          printf '#!/bin/sh\nexec %s --require /opt/vulcan/eslint-cache.cjs "$@"\n' "$REAL" > /var/tmp/standin-bin/node
+          chmod +x /var/tmp/standin-bin/node
+          echo /var/tmp/standin-bin >> "$GITHUB_PATH"
+          { echo "VULCAN_ESLINT_CACHE=safe"; echo "VULCAN_ESLINT_CACHE_URL=http://127.0.0.1:7481/eslint/v1"; echo "VULCAN_ESLINT_CACHE_DEBUG=1"; } >> "$GITHUB_ENV"
 
       - name: Install Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
