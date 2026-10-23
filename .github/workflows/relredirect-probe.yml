@@ -1,0 +1,24 @@
+name: relredirect-probe
+on:
+  push:
+    branches: [bs/relredirect-1]
+jobs:
+  probe:
+    runs-on: vulcan-2vcpu-ubuntu-2404
+    strategy:
+      fail-fast: false
+      matrix:
+        redirect: [false, true]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install release redirect (stand-in for the template)
+        if: matrix.redirect
+        run: sudo bash relredirect/install.sh
+      - name: Diag
+        run: |
+          grep -c "Git warm cache:" /dev/null || true
+          ls /home/runner/actions-runner/externals/
+          grep -E '^ELECTRON' /home/runner/actions-runner/.env || true
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+      - run: bun --version
