@@ -2,14 +2,9 @@ name: BX
 # Bench copy of ci.yml's self-host-schema job (steps verbatim). The optional
 # first step stands in for a runner-image change: it pins dockerd's image store.
 on:
-  workflow_dispatch:
-    inputs:
-      store:
-        description: none | classic | containerd
-        default: none
-      extra:
-        description: also time a docker-container builder --load build (build-push-action pattern)
-        default: 'false'
+  push:
+    branches: ['bs/buildx-*']
+    paths: ['.bx-tick']
 permissions:
   contents: read
 jobs:
@@ -19,12 +14,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: stand-in image store
-        if: inputs.store != 'none'
+        if: ${{ !endsWith(github.ref_name, '-none') }}
         env:
-          STORE: ${{ inputs.store }}
+          STORE: ${{ endsWith(github.ref_name, '-cd') && 'containerd' || 'classic' }}
         run: |
           df -h /mnt/vulcan-sticky 2>/dev/null || true
-          sudo du -sh /mnt/vulcan-sticky/docker/* 2>/dev/null || true
+          sudo ls /mnt/vulcan-sticky/docker 2>/dev/null || true
           docker info --format 'before: driver={{.Driver}} images={{.Images}}'
           v=false; [ "$STORE" = containerd ] && v=true
           f=/etc/docker/daemon.json
@@ -74,7 +69,7 @@ jobs:
           API_IMAGE: kortix/kortix-api:selfhost-local
 
       - name: extra container-builder load
-        if: inputs.extra == 'true'
+        if: ${{ !endsWith(github.ref_name, '-none') }}
         run: |
           docker buildx ls
           b=$(docker buildx ls --format '{{.Name}}' | grep '^builder-' | head -1)
