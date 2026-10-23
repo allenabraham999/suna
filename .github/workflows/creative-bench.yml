@@ -1,0 +1,57 @@
+name: Creative bench
+on:
+  push:
+    branches: [bs/creative-1]
+    paths: ['.github/workflows/creative-bench.yml']
+permissions:
+  contents: read
+jobs:
+  eslint:
+    runs-on: vulcan-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - name: probe
+        run: |
+          nproc; grep -m1 "model name" /proc/cpuinfo; free -m | head -2
+          cat /sys/kernel/mm/transparent_hugepage/enabled /sys/kernel/mm/transparent_hugepage/defrag || true
+          grep -m1 "Git warm cache" -r /home/runner/actions-runner/_diag 2>/dev/null | head -1 || true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 22
+      - name: pnpm
+        run: corepack enable pnpm && pnpm -v && node -v
+      - name: install
+        run: pnpm install --frozen-lockfile --filter "./apps/web..."
+        env:
+          npm_config_engine_strict: "false"
+      - name: eslint variants
+        run: |
+          cd apps/web
+          THP=/sys/kernel/mm/transparent_hugepage/enabled
+          THP0=$(sed -n 's/.*\[\(.*\)\].*/\1/p' $THP)
+          export NCC=$RUNNER_TEMP/ncc
+          run() { # name, then env assignments
+            local name=$1; shift
+            local s e
+            s=$(date +%s.%N)
+            env "$@" pnpm exec eslint src --quiet >/dev/null 2>&1 || true
+            e=$(date +%s.%N)
+            printf 'RESULT %-10s %6.2f\n' "$name" "$(echo "$e - $s" | bc)"
+          }
+          thp() { echo "$1" | sudo tee $THP >/dev/null; }
+          run nccprime NODE_COMPILE_CACHE=$NCC
+          du -sh $NCC || true
+          for round in 1 2; do
+            run plain X=1
+            run ncc NODE_COMPILE_CACHE=$NCC
+            run semi64 NODE_OPTIONS=--max-semi-space-size=64
+            thp always; run thp X=1; thp "$THP0"
+            thp always; run all NODE_COMPILE_CACHE=$NCC NODE_OPTIONS=--max-semi-space-size=64; thp "$THP0"
+          done
+      - name: eslint concurrency (info)
+        run: |
+          cd apps/web
+          s=$(date +%s.%N); pnpm exec eslint src --quiet --concurrency=auto >/dev/null 2>&1; echo "rc=$?"; e=$(date +%s.%N)
+          printf 'RESULT %-10s %6.2f\n' concauto "$(echo "$e - $s" | bc)"
+          pnpm exec eslint --version
