@@ -179,3 +179,4 @@ For AWS, the CLI is the bootstrap and operator remote control. The customer-
 owned updater, scheduler, EKS controllers, and recovery automation continue
 operating after the CLI exits. `start`, `stop`, and direct environment-file
 editing are intentionally Docker-only.
+
