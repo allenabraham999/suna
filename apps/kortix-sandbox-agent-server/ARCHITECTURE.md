@@ -243,3 +243,4 @@ and `package.json` work around. Each one was measured, not assumed:
 - ESLint's config validation crashes under the Bun runtime. Run ESLint and the
   contract script under Node (`bun run lint` does, through the `eslint` bin's
   shebang).
+
