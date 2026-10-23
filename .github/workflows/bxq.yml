@@ -1,0 +1,69 @@
+name: BXQ
+# Two runs of the common pattern in one job: setup-buildx-action + build-push-action
+# (load: true, registry cache-from), then what its post step does (buildx rm) and a
+# dockerd restart (a new VM), then the same pattern again with a new random builder.
+# On -shim branches the first step stands in for the runner-image change (PR shim).
+on:
+  push:
+    branches: ['bs/buildxq-*']
+    paths: ['.bxq-tick']
+permissions:
+  contents: read
+jobs:
+  image:
+    runs-on: ${{ vars.CI_RUNNER_M || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: stand-in image change
+        if: ${{ endsWith(github.ref_name, '-shim') }}
+        run: |
+          install -d ~/.docker/cli-plugins
+          install -m 0755 .bx/docker-buildx ~/.docker/cli-plugins/docker-buildx
+          sudo rm -rf /mnt/vulcan-sticky/docker/vulcan-buildkit; sudo install -d -m 0711 /mnt/vulcan-sticky/docker/vulcan-buildkit
+          echo VULCAN_STICKY_BUILDKIT=/mnt/vulcan-sticky/docker/vulcan-buildkit >> "$GITHUB_ENV"
+      - name: Set up Docker Buildx (run 1)
+        id: b1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build API image (run 1)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          build-args: SERVICE=apps/api
+          load: true
+          tags: kortix/kortix-api:selfhost-local
+          cache-from: type=registry,ref=kortix/kortix-api:dev-buildcache
+      - name: end of run 1 (post step's buildx rm, new dockerd)
+        run: |
+          docker volume ls
+          docker buildx rm ${{ steps.b1.outputs.name }}
+          docker volume ls
+          sudo du -sh /mnt/vulcan-sticky/docker/vulcan-buildkit 2>/dev/null || true
+          pid=$(pidof dockerd); args=$(tr '\0' ' ' < /proc/$pid/cmdline)
+          sudo kill $pid; for _ in $(seq 300); do sudo kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+          sudo sh -c "nohup $args >>/var/log/dockerd.log 2>&1 &"; for _ in $(seq 120); do docker info >/dev/null 2>&1 && break; sleep 0.5; done
+          docker info --format 'dockerd back: {{.Driver}} images={{.Images}}'
+      - name: Set up Docker Buildx (run 2)
+        id: b2
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build API image (run 2)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          build-args: SERVICE=apps/api
+          load: true
+          tags: kortix/kortix-api:selfhost-local
+          cache-from: type=registry,ref=kortix/kortix-api:dev-buildcache
+      - name: Use the image
+        run: |
+          echo "builders: ${{ steps.b1.outputs.name }} then ${{ steps.b2.outputs.name }}"
+          docker image inspect kortix/kortix-api:selfhost-local --format '{{.Id}} {{.Size}}' && docker run --rm --entrypoint sh kortix/kortix-api:selfhost-local -c 'echo ran'
+          docker volume ls
+      - name: clean (bench only; keeps the polluted disk from growing)
+        if: ${{ always() && endsWith(github.ref_name, '-shim') }}
+        run: |
+          docker buildx rm ${{ steps.b2.outputs.name }} || true
+          sudo rm -rf /mnt/vulcan-sticky/docker/vulcan-buildkit
