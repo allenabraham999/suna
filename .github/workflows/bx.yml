@@ -83,7 +83,9 @@ jobs:
           docker buildx build --builder "$b" --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t bx/api:container . 2>&1 | grep -E '^#[0-9]+ (exporting|sending|importing|unpacking|naming|writing|DONE [0-9]{2,})|ERROR' | tail -20
           echo "container-builder build+load: $(( $(date +%s) - t0 ))s"
           # Same with a kept-state builder (what a persistent builder would give on its second use)
-          docker buildx create --name bxkeep --driver docker-container --use=false >/dev/null 2>&1 || true
+          docker rm -f buildx_buildkit_bxkeep0 >/dev/null 2>&1 || true
+          docker buildx create --name bxkeep --driver docker-container --buildkitd-config $HOME/.docker/buildx/buildkitd.default.toml
+          docker volume ls | grep bxkeep || true
           t0=$(date +%s)
           docker buildx build --builder bxkeep --load --cache-from type=registry,ref=kortix/kortix-api:dev-buildcache --build-arg SERVICE=apps/api -f apps/api/Dockerfile -t bx/api:keep . 2>&1 | grep -E '^#[0-9]+ (exporting|sending|importing|unpacking|naming|writing|DONE [0-9]{2,})|ERROR' | tail -20
           echo "kept-state builder build+load: $(( $(date +%s) - t0 ))s"
