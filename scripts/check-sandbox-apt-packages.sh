@@ -44,3 +44,4 @@ docker run --rm \
   "$base" bash -c \
   "apt-get update -qq >/dev/null && apt-get install --dry-run --no-install-recommends ${packages} >/dev/null"
 echo "all ${count} packages resolve"
+
